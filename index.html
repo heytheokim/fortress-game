@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>포트리스 클론 - 4단계</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #10131c;
+    color: #eee;
+    font-family: "Courier New", monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 10px;
+    user-select: none;
+  }
+
+  h1 { font-size: 16px; letter-spacing: 3px; color: #ffd700; }
+
+  #frame {
+    border: 4px solid #2a3244;
+    border-radius: 6px;
+    background: #000;
+    image-rendering: pixelated;
+    box-shadow: 0 0 40px rgba(30, 90, 160, 0.25);
+  }
+  canvas { display: block; image-rendering: pixelated; }
+
+  #help { font-size: 12px; color: #6d7a8f; line-height: 1.8; text-align: center; }
+  #help b { color: #ffd700; }
+</style>
+</head>
+<body>
+
+  <h1>◆ FORTRESS ◆</h1>
+
+  <div id="frame">
+    <canvas id="game" width="800" height="580"></canvas>
+  </div>
+
+  <div id="help">
+    <b>← →</b> 이동(연료 소모) &nbsp; <b>↑ ↓</b> 각도 &nbsp; <b>스페이스 꾹</b> 파워→발사 &nbsp;
+    <b>H</b> 지난발사 표시 &nbsp; <b>R</b> 재대결 &nbsp; <b>M</b> 처음 화면
+  </div>
+
+<script>
+/* =========================================================
+   포트리스 클론 - 4단계: 새 단장
+   탱크 3종 / 맵 3종 선택 + 이동 + 하단 HUD + 이펙트 강화
+   ========================================================= */
+
+// ---------- 캔버스 ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;          // 800
+const H = canvas.height;         // 580 (아래 80px은 HUD 패널)
+const GROUND_H = 500;            // 게임이 벌어지는 영역의 세로 크기
+const HUD_Y = GROUND_H;          // HUD 패널이 시작되는 y
+
+// ---------- 게임 설정값 ----------
+const CONFIG = {
+  gravity: 0.11,
+  powerMax: 100,
+  powerSpeed: 1.1,
+  powerScale: 0.10,     // 최대 파워로 45도 발사 시 화면 끝에 겨우 닿는 값
+  angleSpeed: 1,
+  maxHp: 100,
+  hitRadius: 16,        // 포탄이 대포에 직격했다고 보는 거리
+
+  fuelMax: 70,          // 한 턴에 움직일 수 있는 거리(픽셀)
+  moveSpeed: 1.2,       // 이동 속도 (프레임당 픽셀)
+
+  aiThinkTime: 55,
+  aiFirstError: 320,    // 40판씩 돌려 맞춘 값 — 줄이면 AI가 급격히 강해짐
+  aiErrorDecay: 0.65,
+  aiMinError: 32,
+
+  windMax: 5,
+  windUnit: 0.004,      // 최대 바람일 때 긴 발이 100px쯤 밀리는 값
+};
+
+// ---------- 탱크 3종 ----------
+// 단순히 색만 다른 게 아니라 "한 방"과 "맞추기 쉬움"을 교환합니다.
+// dmg × 필요타수가 비슷하도록 맞춰 어느 걸 골라도 손해가 없게 했습니다.
+const TANKS = [
+  { name: '레이븐',  desc: '균형형 — 무난하고 정직한 주력기',
+    color: '#4ec9f5', dmg: 58, radius: 35,
+    trail: '#ffe680', expl: ['#ff9d2e', '#ffe15c'], shell: 3, shake: 9 },
+  { name: '매머드',  desc: '한방형 — 좁지만 정통이면 강력',
+    color: '#f5a623', dmg: 78, radius: 26,
+    trail: '#ff8a5c', expl: ['#ff5c2e', '#ffd15c'], shell: 5, shake: 14 },
+  { name: '스톰',    desc: '광역형 — 넓게 맞지만 가볍게',
+    color: '#a98df5', dmg: 42, radius: 50,
+    trail: '#c9a6ff', expl: ['#7b5cff', '#d9e6ff'], shell: 3, shake: 7 },
+];
+
+// ---------- 맵 3종 ----------
+// sky: 하늘 그라데이션 / dirt: 흙색 / top: 지표면 색 / deco: 배경 장식 종류
+// t: 지형 굴곡 (f=파장, a=높낮이) — 맵마다 언덕 모양이 다릅니다
+const MAPS = [
+  { name: '초원',      sky: ['#5db8f0', '#b8e8ff'], dirt: '#7a4f2c', top: '#4fb84a',
+    deco: 'clouds', streak: 'rgba(255,255,255,0.35)',
+    t: { f1: 0.006, a1: 45, f2: 0.017, a2: 16, f3: 0.041, a3: 6 } },
+  { name: '사막의 밤', sky: ['#0b0e2a', '#3a2e5c'], dirt: '#6e5638', top: '#d8b878',
+    deco: 'stars',  streak: 'rgba(255,220,160,0.3)',
+    t: { f1: 0.004, a1: 70, f2: 0.013, a2: 25, f3: 0.030, a3: 5 } },
+  { name: '설원',      sky: ['#8fb8d8', '#e8f4fc'], dirt: '#5e7189', top: '#f0f8ff',
+    deco: 'snow',   streak: 'rgba(255,255,255,0.5)',
+    t: { f1: 0.007, a1: 55, f2: 0.021, a2: 26, f3: 0.050, a3: 12 } },
+];
+
+// ---------- 진행 상태 ----------
+// 'menu' → 'aiming' ⇄ 'flying' ⇄ 'aiThink' → 'gameover'
+let phase = 'menu';
+let turn = 'player';
+let winner = null;
+let message = '';
+let messageTimer = 0;
+let aiTimer = 0;
+
+// 메뉴 선택 상태
+let menuRow = 0;       // 0=탱크 줄, 1=맵 줄
+let selTank = 0;
+let selMap = 0;
+let map = MAPS[0];
+
+// 바람
+let windLevel = 0;
+let wind = 0;
+function rollWind() {
+  windLevel = Math.floor(Math.random() * (CONFIG.windMax * 2 + 1)) - CONFIG.windMax;
+  wind = windLevel * CONFIG.windUnit;
+}
+
+// 연출 상태
+let lastPlayerHit = null;   // 내 포탄이 마지막으로 터진 자리 (✕ 표시)
+let myLastShot = null;      // 내가 직전에 쏜 각도·파워 (HUD 힌트)
+let showHint = true;        // H 키로 켜고 끄는 지난 발사 힌트
+let shake = 0;
+
+// ---------- 지형 ----------
+let terrain = new Array(W);
+
+function generateTerrain() {
+  const base = GROUND_H * 0.7;
+  const s1 = Math.random() * 1000, s2 = Math.random() * 1000, s3 = Math.random() * 1000;
+  const t = map.t;
+  for (let x = 0; x < W; x++) {
+    let h = base;
+    h += Math.sin((x + s1) * t.f1) * t.a1;
+    h += Math.sin((x + s2) * t.f2) * t.a2;
+    h += Math.sin((x + s3) * t.f3) * t.a3;
+    terrain[x] = Math.max(130, Math.min(GROUND_H - 26, Math.round(h)));
+  }
+}
+
+// ---------- 대포 ----------
+const player = {
+  x: 110, y: 0, angle: 45, hp: CONFIG.maxHp,
+  fuel: CONFIG.fuelMax,
+  stats: TANKS[0],
+  name: '나',
+};
+const enemy = {
+  x: 690, y: 0, angle: 135, hp: CONFIG.maxHp,
+  stats: TANKS[1],
+  name: '적',
+  moveTarget: null,     // AI가 이번 턴에 이동할 목적지 (없으면 안 움직임)
+  lastPower: null, lastAngle: null,
+  shotCount: 0,
+};
+
+function placeTanks() {
+  player.y = terrain[Math.round(player.x)];
+  enemy.y  = terrain[Math.round(enemy.x)];
+}
+
+// ---------- 포탄 ----------
+let bullet = null;
+
+function fire(shooter, angle, powerVal, who) {
+  const rad = angle * Math.PI / 180;
+  const speed = powerVal * CONFIG.powerScale;
+  const stats = who === 'player' ? player.stats : enemy.stats;
+
+  bullet = {
+    x: shooter.x + Math.cos(rad) * 22,
+    y: shooter.y - 14 - Math.sin(rad) * 22,
+    vx: Math.cos(rad) * speed,
+    vy: -Math.sin(rad) * speed,
+    trail: [], who,
+    color: stats.trail, size: stats.shell,
+  };
+
+  // 발사 순간의 불꽃(머즐 플래시)
+  flashes.push({ x: bullet.x, y: bullet.y, life: 7, color: stats.trail });
+
+  // 내 발사 기록 (HUD 힌트용)
+  if (who === 'player') {
+    myLastShot = { angle: Math.round(angle), power: Math.round(powerVal) };
+  }
+  phase = 'flying';
+}
+
+// ---------- 폭발 ----------
+let explosions = [];
+let sparks = [];        // 폭발 파편
+let flashes = [];       // 발사 불꽃
+let damageTexts = [];
+let confetti = [];      // 승리 폭죽
+
+function createExplosion(x, y, who) {
+  const stats = who === 'player' ? player.stats : enemy.stats;
+
+  explosions.push({ x, y, radius: 0, life: 1, maxR: stats.radius, colors: stats.expl });
+  shake = stats.shake;
+
+  // 파편이 사방으로 튐
+  for (let i = 0; i < 16; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 1.5 + Math.random() * 3.5;
+    sparks.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 2,
+      life: 1,
+      color: Math.random() < 0.5 ? stats.expl[0] : stats.expl[1],
+    });
+  }
+
+  if (who === 'player') lastPlayerHit = { x, y };
+
+  // 데미지 (쏜 쪽의 스탯으로 계산 — 자기 포탄에 자기도 다칠 수 있음)
+  applyDamage(player, x, y, stats);
+  applyDamage(enemy,  x, y, stats);
+
+  // 땅 파기
+  const r = stats.radius;
+  for (let i = Math.round(x - r); i <= Math.round(x + r); i++) {
+    if (i < 0 || i >= W) continue;
+    const dx = i - x;
+    const depth = Math.sqrt(Math.max(0, r * r - dx * dx));
+    const newY = y + depth;
+    if (newY > terrain[i]) terrain[i] = Math.min(GROUND_H - 5, newY);
+  }
+  placeTanks();
+}
+
+function applyDamage(tank, ex, ey, stats) {
+  const dx = tank.x - ex;
+  const dy = (tank.y - 8) - ey;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > stats.radius) return;
+
+  const ratio = dist / stats.radius;
+  const dmg = Math.round(stats.dmg * (1 - ratio) * (1 - ratio * 0.5));
+  if (dmg > 0) {
+    tank.hp = Math.max(0, tank.hp - dmg);
+    damageTexts.push({ x: tank.x, y: tank.y - 30, value: dmg, life: 1 });
+  }
+}
+
+// ---------- 배경 장식 (바람이 눈에 보이게) ----------
+// 바람 줄기: 하늘을 가로질러 흐르는 짧은 선. 바람 방향·세기 그대로 움직입니다.
+let windStreaks = [];
+for (let i = 0; i < 26; i++) {
+  windStreaks.push({ x: Math.random() * W, y: 40 + Math.random() * (GROUND_H - 180) });
+}
+// 구름(초원) / 별·달(사막) / 눈(설원)
+let clouds = [];
+let stars = [];
+let snowflakes = [];
+
+function initDeco() {
+  clouds = []; stars = []; snowflakes = [];
+  if (map.deco === 'clouds') {
+    for (let i = 0; i < 5; i++) {
+      clouds.push({ x: Math.random() * W, y: 40 + Math.random() * 150,
+                    s: 0.7 + Math.random() * 0.9 });
+    }
+  } else if (map.deco === 'stars') {
+    for (let i = 0; i < 70; i++) {
+      stars.push({ x: Math.random() * W, y: Math.random() * (GROUND_H - 160),
+                   b: 0.3 + Math.random() * 0.7 });
+    }
+  } else if (map.deco === 'snow') {
+    for (let i = 0; i < 60; i++) {
+      snowflakes.push({ x: Math.random() * W, y: Math.random() * GROUND_H,
+                        vy: 0.4 + Math.random() * 0.8 });
+    }
+  }
+}
+
+// ---------- 입력 ----------
+const keys = {};
+let charging = false;
+let power = 0;
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') e.preventDefault();
+
+  // --- 메뉴 화면 조작 ---
+  if (phase === 'menu') {
+    if (e.code === 'ArrowLeft')  { if (menuRow === 0) selTank = (selTank + 2) % 3; else selMap = (selMap + 2) % 3; }
+    if (e.code === 'ArrowRight') { if (menuRow === 0) selTank = (selTank + 1) % 3; else selMap = (selMap + 1) % 3; }
+    if (e.code === 'ArrowUp' || e.code === 'ArrowDown') menuRow = 1 - menuRow;
+    if (e.code === 'Enter' || e.code === 'Space') startGame();
+    return;
+  }
+
+  if (e.code === 'Space') {
+    if (phase === 'aiming' && turn === 'player' && !charging) {
+      charging = true; power = 0;
+    }
+    return;
+  }
+  keys[e.code] = true;
+
+  if (e.code === 'KeyH') showHint = !showHint;
+  if (e.code === 'KeyR') newGame();               // 같은 탱크·맵으로 재대결
+  if (e.code === 'KeyM') { phase = 'menu'; bullet = null; }
+});
+
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (charging) {
+      charging = false;
+      fire(player, player.angle, power, 'player');
+      power = 0;
+    }
+    return;
+  }
+  keys[e.code] = false;
+});
+
+// 창을 벗어나면 충전·이동 키를 모두 취소 (게이지 걸림 방지)
+window.addEventListener('blur', () => {
+  charging = false; power = 0;
+  for (const k in keys) keys[k] = false;
+});
+
+// 메뉴에서 마우스 클릭으로도 선택 가능
+canvas.addEventListener('click', (e) => {
+  if (phase !== 'menu') return;
+  const mx = e.offsetX, my = e.offsetY;
+  for (let i = 0; i < 3; i++) {
+    const t = tankCardRect(i);
+    if (mx >= t.x && mx <= t.x + t.w && my >= t.y && my <= t.y + t.h) { selTank = i; menuRow = 0; return; }
+    const m = mapCardRect(i);
+    if (mx >= m.x && mx <= m.x + m.w && my >= m.y && my <= m.y + m.h) { selMap = i; menuRow = 1; return; }
+  }
+  const b = startBtnRect();
+  if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) startGame();
+});
+
+// ---------- AI 조준 ----------
+// 게임과 완전히 같은 물리(바람 포함)로 미리 날려보는 방식.
+// 교과서 공식은 프레임 단위 계산과 어긋나 실제로 165px나 빗나갔기 때문입니다.
+function simulateLanding(from, angleDeg, powerVal) {
+  const rad = angleDeg * Math.PI / 180;
+  const speed = powerVal * CONFIG.powerScale;
+  let x = from.x + Math.cos(rad) * 22;
+  let y = from.y - 14 - Math.sin(rad) * 22;
+  let vx = Math.cos(rad) * speed;
+  let vy = -Math.sin(rad) * speed;
+
+  for (let i = 0; i < 3000; i++) {
+    x += vx; y += vy; vy += CONFIG.gravity; vx += wind;
+    const dx = x - player.x, dy = y - (player.y - 10);
+    if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) return x;
+    if (x < -50 || x > W + 50 || y > GROUND_H + 140) return x;
+    if (y >= 0) {
+      const gx = Math.round(x);
+      if (gx >= 0 && gx < W && y >= terrain[gx]) return x;
+    }
+  }
+  return x;
+}
+
+// 목표 지점에 맞는 파워를 절반씩 좁혀가며 찾기 (이분 탐색)
+function findPowerFor(angleDeg, targetX) {
+  let low = 15, high = CONFIG.powerMax;
+  let bestPower = null, bestDist = Infinity;
+  for (let i = 0; i < 24; i++) {
+    const mid = (low + high) / 2;
+    const landX = simulateLanding(enemy, angleDeg, mid);
+    const dist = Math.abs(landX - targetX);
+    if (dist < bestDist) { bestDist = dist; bestPower = mid; }
+    if (landX > targetX) low = mid; else high = mid;
+  }
+  if (bestDist > 60) return null;
+  return bestPower;
+}
+
+function aiDecideShot() {
+  // 쏠수록 오차(손떨림)가 줄어듭니다: 320px → 208 → 135 → ... → 최소 32px
+  let errorSize = CONFIG.aiFirstError * Math.pow(CONFIG.aiErrorDecay, enemy.shotCount);
+  errorSize = Math.max(CONFIG.aiMinError, errorSize);
+
+  const jitter = (Math.random() * 2 - 1) * errorSize;
+  const targetX = player.x + jitter;
+
+  let best = null;
+  for (let a = 100; a <= 170; a += 3) {
+    const p = findPowerFor(a, targetX);
+    if (p === null) continue;
+    const landX = simulateLanding(enemy, a, p);
+    const dist = Math.abs(landX - targetX);
+    const score = dist + Math.abs(a - 135) * 0.1;
+    if (!best || score < best.score) best = { angle: a, power: p, score };
+  }
+  if (!best) best = { angle: 135, power: 70 };
+
+  const finalPower = Math.max(15, Math.min(CONFIG.powerMax, best.power));
+  enemy.shotCount++;
+  enemy.lastAngle = best.angle;
+  enemy.lastPower = finalPower;
+  return { angle: best.angle, power: finalPower };
+}
+
+// ---------- 턴 ----------
+function nextTurn() {
+  if (player.hp <= 0 || enemy.hp <= 0) {
+    phase = 'gameover';
+    winner = (enemy.hp <= 0 && player.hp > 0) ? 'player'
+           : (player.hp <= 0 && enemy.hp > 0) ? 'enemy' : 'draw';
+    if (winner === 'player') spawnConfetti();
+    return;
+  }
+
+  rollWind();   // 턴마다 바람이 새로 붑니다
+
+  if (turn === 'player') {
+    turn = 'enemy';
+    phase = 'aiThink';
+    aiTimer = CONFIG.aiThinkTime;
+    // AI도 절반 확률로 자리를 옮깁니다 (같은 자리 싸움 방지)
+    if (Math.random() < 0.5) {
+      const delta = (20 + Math.random() * 60) * (Math.random() < 0.5 ? -1 : 1);
+      enemy.moveTarget = Math.max(W * 0.55, Math.min(W - 30, enemy.x + delta));
+    } else {
+      enemy.moveTarget = null;
+    }
+    showMessage('적의 차례', 50);
+  } else {
+    turn = 'player';
+    phase = 'aiming';
+    player.fuel = CONFIG.fuelMax;   // 연료는 매 턴 가득 찹니다
+    showMessage('내 차례', 50);
+  }
+}
+
+function showMessage(text, duration) { message = text; messageTimer = duration; }
+
+function spawnConfetti() {
+  const palette = ['#ffd700', '#4ec9f5', '#f56b6b', '#7ec850', '#c9a6ff'];
+  for (let i = 0; i < 90; i++) {
+    confetti.push({
+      x: Math.random() * W,
+      y: -20 - Math.random() * 150,
+      vy: 1 + Math.random() * 1.6,
+      vx: (Math.random() * 2 - 1) * 0.8,
+      size: 3 + Math.random() * 3,
+      color: palette[i % palette.length],
+      spin: Math.random() * Math.PI,
+    });
+  }
+}
+
+// ---------- 게임 시작 ----------
+function startGame() {
+  player.stats = TANKS[selTank];
+  enemy.stats  = TANKS[Math.floor(Math.random() * TANKS.length)];  // 적은 무작위 기종
+  map = MAPS[selMap];
+  newGame();
+}
+
+function newGame() {
+  generateTerrain();
+  initDeco();
+
+  player.hp = CONFIG.maxHp; player.x = 110; player.angle = 45;
+  player.fuel = CONFIG.fuelMax;
+  enemy.hp = CONFIG.maxHp; enemy.x = 690; enemy.angle = 135;
+  enemy.lastPower = null; enemy.lastAngle = null;
+  enemy.shotCount = 0; enemy.moveTarget = null;
+  placeTanks();
+
+  bullet = null;
+  explosions = []; sparks = []; flashes = []; damageTexts = []; confetti = [];
+  charging = false; power = 0;
+  lastPlayerHit = null; myLastShot = null;
+  shake = 0;
+  rollWind();
+
+  turn = 'player';
+  phase = 'aiming';
+  winner = null;
+  showMessage('내 차례', 60);
+}
+
+// ---------- 갱신 ----------
+function update() {
+  if (phase === 'menu') return;
+
+  if (messageTimer > 0) messageTimer--;
+  updateAmbient();
+
+  if (phase === 'gameover') { updateEffects(); return; }
+
+  // --- 플레이어 조작: ←→ 이동, ↑↓ 각도 ---
+  if (phase === 'aiming' && turn === 'player') {
+    if (keys['ArrowUp'])   player.angle = Math.min(170, player.angle + CONFIG.angleSpeed);
+    if (keys['ArrowDown']) player.angle = Math.max(10,  player.angle - CONFIG.angleSpeed);
+
+    if (keys['ArrowLeft'] && player.fuel > 0) {
+      player.x = Math.max(25, player.x - CONFIG.moveSpeed);
+      player.fuel = Math.max(0, player.fuel - CONFIG.moveSpeed);
+      player.y = terrain[Math.round(player.x)];
+    }
+    if (keys['ArrowRight'] && player.fuel > 0) {
+      player.x = Math.min(W * 0.6, player.x + CONFIG.moveSpeed);   // 적 진영까지는 못 감
+      player.fuel = Math.max(0, player.fuel - CONFIG.moveSpeed);
+      player.y = terrain[Math.round(player.x)];
+    }
+  }
+
+  if (charging) power = Math.min(CONFIG.powerMax, power + CONFIG.powerSpeed);
+
+  // --- AI: 먼저 이동하고, 도착하면 생각이 끝난 뒤 발사 ---
+  if (phase === 'aiThink') {
+    if (enemy.moveTarget !== null && Math.abs(enemy.x - enemy.moveTarget) > 1.5) {
+      enemy.x += Math.sign(enemy.moveTarget - enemy.x) * 0.9;
+      enemy.y = terrain[Math.round(enemy.x)];
+    } else {
+      enemy.moveTarget = null;
+      aiTimer--;
+      if (aiTimer <= 0) {
+        const shot = aiDecideShot();
+        enemy.angle = shot.angle;
+        fire(enemy, shot.angle, shot.power, 'enemy');
+      }
+    }
+  }
+
+  // --- 포탄 ---
+  if (bullet) {
+    bullet.trail.push({ x: bullet.x, y: bullet.y });
+    if (bullet.trail.length > 40) bullet.trail.shift();
+
+    bullet.x += bullet.vx;
+    bullet.y += bullet.vy;
+    bullet.vy += CONFIG.gravity;
+    bullet.vx += wind;              // 바람이 옆으로 밀어냄
+
+    let hit = false;
+    for (const tank of [player, enemy]) {
+      const dx = bullet.x - tank.x, dy = bullet.y - (tank.y - 10);
+      if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) {
+        createExplosion(bullet.x, bullet.y, bullet.who);
+        hit = true; break;
+      }
+    }
+    if (!hit && (bullet.x < -50 || bullet.x > W + 50 || bullet.y > GROUND_H + 140)) {
+      bullet = null; nextTurn();
+    } else if (!hit && bullet.y >= 0) {
+      const gx = Math.round(bullet.x);
+      if (gx >= 0 && gx < W && bullet.y >= terrain[gx]) {
+        createExplosion(bullet.x, bullet.y, bullet.who);
+        hit = true;
+      }
+    }
+    if (hit) { bullet = null; nextTurn(); }
+  }
+
+  updateEffects();
+}
+
+// 배경 장식 움직임 (바람의 방향이 여기서 보입니다)
+function updateAmbient() {
+  // 바람 줄기: 바람 세기에 비례해 흐름
+  const sp = windLevel * 1.4;
+  for (const s of windStreaks) {
+    s.x += sp;
+    if (s.x < -30) { s.x = W + 20; s.y = 40 + Math.random() * (GROUND_H - 180); }
+    if (s.x > W + 30) { s.x = -20; s.y = 40 + Math.random() * (GROUND_H - 180); }
+  }
+  // 구름은 바람 + 자체 흐름으로 천천히
+  for (const c of clouds) {
+    c.x += windLevel * 0.15 + 0.05;
+    if (c.x > W + 90) c.x = -90;
+    if (c.x < -90) c.x = W + 90;
+  }
+  // 눈은 아래로 내리면서 바람에 비스듬히
+  for (const f of snowflakes) {
+    f.y += f.vy;
+    f.x += windLevel * 0.5 + Math.sin(f.y * 0.02) * 0.3;
+    if (f.y > GROUND_H) { f.y = -5; f.x = Math.random() * W; }
+    if (f.x < 0) f.x += W;
+    if (f.x > W) f.x -= W;
+  }
+}
+
+function updateEffects() {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    ex.radius += 3;
+    ex.life -= 0.05;
+    if (ex.life <= 0) explosions.splice(i, 1);
+  }
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const p = sparks[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15;
+    p.life -= 0.03;
+    if (p.life <= 0) sparks.splice(i, 1);
+  }
+  for (let i = flashes.length - 1; i >= 0; i--) {
+    flashes[i].life--;
+    if (flashes[i].life <= 0) flashes.splice(i, 1);
+  }
+  for (let i = damageTexts.length - 1; i >= 0; i--) {
+    const dt = damageTexts[i];
+    dt.y -= 0.8; dt.life -= 0.018;
+    if (dt.life <= 0) damageTexts.splice(i, 1);
+  }
+  for (let i = confetti.length - 1; i >= 0; i--) {
+    const c = confetti[i];
+    c.y += c.vy; c.x += c.vx; c.spin += 0.1;
+    if (c.y > H + 10) confetti.splice(i, 1);
+  }
+  shake *= 0.82;
+  if (shake < 0.3) shake = 0;
+}
+
+// ---------- 그리기 ----------
+function draw() {
+  if (phase === 'menu') { drawMenu(); return; }
+
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() * 2 - 1) * shake, (Math.random() * 2 - 1) * shake);
+
+  // 하늘
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND_H);
+  sky.addColorStop(0, map.sky[0]);
+  sky.addColorStop(1, map.sky[1]);
+  ctx.fillStyle = sky;
+  ctx.fillRect(-20, -20, W + 40, GROUND_H + 40);
+
+  drawDeco();
+  drawWindStreaks();
+
+  // 지형
+  ctx.fillStyle = map.dirt;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_H);
+  for (let x = 0; x < W; x++) ctx.lineTo(x, terrain[x]);
+  ctx.lineTo(W, GROUND_H);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = map.top;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, terrain[0]);
+  for (let x = 1; x < W; x++) ctx.lineTo(x, terrain[x]);
+  ctx.stroke();
+
+  // 직전 착탄 ✕
+  if (lastPlayerHit && phase !== 'gameover') {
+    ctx.strokeStyle = 'rgba(255, 230, 120, 0.75)';
+    ctx.lineWidth = 2;
+    const m = lastPlayerHit, s = 6;
+    ctx.beginPath();
+    ctx.moveTo(m.x - s, m.y - s); ctx.lineTo(m.x + s, m.y + s);
+    ctx.moveTo(m.x + s, m.y - s); ctx.lineTo(m.x - s, m.y + s);
+    ctx.stroke();
+  }
+
+  drawTank(player);
+  drawTank(enemy);
+
+  // 발사 불꽃
+  for (const f of flashes) {
+    ctx.fillStyle = f.color;
+    ctx.globalAlpha = f.life / 7;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, 4 + (7 - f.life) * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // 포탄
+  if (bullet) {
+    for (let i = 0; i < bullet.trail.length; i++) {
+      const t = bullet.trail[i];
+      ctx.globalAlpha = i / bullet.trail.length * 0.6;
+      ctx.fillStyle = bullet.color;
+      ctx.fillRect(Math.round(t.x) - 1, Math.round(t.y) - 1, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = bullet.color;
+    const s = bullet.size;
+    ctx.fillRect(Math.round(bullet.x) - s, Math.round(bullet.y) - s, s * 2, s * 2);
+  }
+
+  // 폭발 (탱크마다 색이 다름)
+  for (const ex of explosions) {
+    ctx.fillStyle = ex.colors[0];
+    ctx.globalAlpha = ex.life;
+    ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = ex.colors[1];
+    ctx.globalAlpha = ex.life * 0.85;
+    ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius * 0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  // 파편
+  for (const p of sparks) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3);
+    ctx.globalAlpha = 1;
+  }
+
+  // 데미지 숫자
+  ctx.textAlign = 'center';
+  for (const dt of damageTexts) {
+    ctx.fillStyle = `rgba(255, 80, 80, ${dt.life})`;
+    ctx.font = 'bold 20px "Courier New", monospace';
+    ctx.fillText(`-${dt.value}`, dt.x, dt.y);
+  }
+  ctx.textAlign = 'left';
+
+  // 중앙 안내
+  if (messageTimer > 0 && phase !== 'gameover') {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = turn === 'player' ? player.stats.color : '#f56b6b';
+    ctx.font = 'bold 28px "Courier New", monospace';
+    ctx.fillText(message, W / 2, 90);
+    ctx.textAlign = 'left';
+  }
+  if (phase === 'aiThink') {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(245, 107, 107, 0.9)';
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText(enemy.moveTarget !== null ? '적이 이동하는 중...' : '적이 조준하는 중...', W / 2, 120);
+    ctx.textAlign = 'left';
+  }
+
+  drawHUD();
+
+  if (phase === 'gameover') drawGameOver();
+
+  ctx.restore();
+}
+
+// 맵별 배경 장식
+function drawDeco() {
+  if (map.deco === 'clouds') {
+    // 도트풍 구름 (네모 덩어리)
+    for (const c of clouds) {
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      const s = c.s;
+      ctx.fillRect(c.x - 30 * s, c.y, 60 * s, 14 * s);
+      ctx.fillRect(c.x - 18 * s, c.y - 10 * s, 36 * s, 12 * s);
+      ctx.fillRect(c.x - 6 * s,  c.y - 16 * s, 18 * s, 8 * s);
+    }
+  } else if (map.deco === 'stars') {
+    for (const st of stars) {
+      ctx.fillStyle = `rgba(255,255,230,${st.b})`;
+      ctx.fillRect(st.x, st.y, 2, 2);
+    }
+    // 달
+    ctx.fillStyle = '#f0ead0';
+    ctx.beginPath(); ctx.arc(W - 130, 80, 26, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = map.sky[0];
+    ctx.beginPath(); ctx.arc(W - 120, 72, 22, 0, Math.PI * 2); ctx.fill();
+  } else if (map.deco === 'snow') {
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (const f of snowflakes) ctx.fillRect(f.x, f.y, 2, 2);
+  }
+}
+
+// 바람 줄기 — 세기가 강할수록 길고 진하게
+function drawWindStreaks() {
+  if (windLevel === 0) return;
+  const len = Math.abs(windLevel) * 7 + 5;
+  ctx.strokeStyle = map.streak;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const s of windStreaks) {
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(s.x - Math.sign(windLevel) * len, s.y);
+  }
+  ctx.stroke();
+}
+
+// 탱크 (기종마다 실루엣이 다름)
+function drawTank(p) {
+  const dead = p.hp <= 0;
+  const rad = p.angle * Math.PI / 180;
+  const c = dead ? '#555' : p.stats.color;
+  const type = TANKS.indexOf(p.stats);
+
+  if (!dead) {
+    ctx.strokeStyle = '#cfd8dc';
+    ctx.lineWidth = type === 1 ? 7 : type === 2 ? 3 : 5;   // 매머드 굵게, 스톰 얇게
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 14);
+    ctx.lineTo(p.x + Math.cos(rad) * 24, p.y - 14 - Math.sin(rad) * 24);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = c;
+  if (type === 1) {          // 매머드: 크고 각진 몸체
+    ctx.fillRect(p.x - 17, p.y - 16, 34, 16);
+    if (!dead) { ctx.fillRect(p.x - 8, p.y - 22, 16, 7); }
+  } else if (type === 2) {   // 스톰: 날렵한 몸체 + 안테나
+    ctx.fillRect(p.x - 13, p.y - 12, 26, 12);
+    if (!dead) {
+      ctx.beginPath(); ctx.arc(p.x, p.y - 12, 7, Math.PI, 0); ctx.fill();
+      ctx.fillRect(p.x + 8, p.y - 26, 2, 12);
+      ctx.fillRect(p.x + 6, p.y - 27, 6, 2);
+    }
+  } else {                   // 레이븐: 기본형
+    ctx.fillRect(p.x - 14, p.y - 14, 28, 14);
+    if (!dead) { ctx.beginPath(); ctx.arc(p.x, p.y - 14, 9, Math.PI, 0); ctx.fill(); }
+  }
+
+  // 바퀴
+  ctx.fillStyle = '#2b2b3a';
+  ctx.fillRect(p.x - 16, p.y - 4, 32, 5);
+
+  // 현재 차례 화살표
+  const myTurn = (turn === 'player' && p === player) || (turn === 'enemy' && p === enemy);
+  if (myTurn && phase !== 'gameover' && !dead) {
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 44);
+    ctx.lineTo(p.x - 7, p.y - 56);
+    ctx.lineTo(p.x + 7, p.y - 56);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// ---------- 하단 HUD ----------
+function drawHUD() {
+  // 패널 바탕
+  ctx.fillStyle = '#0e1219';
+  ctx.fillRect(-20, HUD_Y, W + 40, H - HUD_Y + 20);
+  ctx.fillStyle = '#2e3d55';
+  ctx.fillRect(-20, HUD_Y, W + 40, 2);
+
+  ctx.textAlign = 'left';
+
+  // === 내 정보 (왼쪽) ===
+  ctx.fillStyle = player.stats.color;
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.fillText(`나 · ${player.stats.name}`, 14, HUD_Y + 20);
+  bar(14, HUD_Y + 28, 150, 12, player.hp / CONFIG.maxHp, hpColor(player.hp), player.stats.color);
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '10px "Courier New", monospace';
+  ctx.fillText('연료', 14, HUD_Y + 56);
+  bar(46, HUD_Y + 48, 118, 8, player.fuel / CONFIG.fuelMax, '#e8c14a', '#555');
+
+  // === 각도 + 지난 발사 (중앙 왼쪽) ===
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillText('각도', 200, HUD_Y + 18);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px "Courier New", monospace';
+  ctx.fillText(`${Math.round(player.angle)}°`, 200, HUD_Y + 44);
+  ctx.font = '10px "Courier New", monospace';
+  if (showHint && myLastShot) {
+    ctx.fillStyle = '#c9b46a';
+    ctx.fillText(`지난발사 ${myLastShot.angle}° · ${myLastShot.power}%`, 200, HUD_Y + 62);
+  } else if (showHint) {
+    ctx.fillStyle = '#556377';
+    ctx.fillText('아직 발사 전', 200, HUD_Y + 62);
+  } else {
+    ctx.fillStyle = '#556377';
+    ctx.fillText('힌트 꺼짐 (H)', 200, HUD_Y + 62);
+  }
+
+  // === 파워 게이지 (중앙) ===
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillText('파워', 340, HUD_Y + 18);
+  const showing = charging ? power : 0;
+  const ratio = showing / CONFIG.powerMax;
+  bar(340, HUD_Y + 26, 240, 20, ratio,
+      ratio > 0.85 ? '#f44336' : ratio > 0.6 ? '#ffc107' : '#4caf50', '#3a4a63');
+  // 눈금 (10% 간격)
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  for (let i = 1; i < 10; i++) ctx.fillRect(340 + i * 24, HUD_Y + 27, 1, 18);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.fillText(`${Math.round(showing)}%`, 340 + 246, HUD_Y + 41);
+
+  // 지난 발사 파워 위치 표시 (게이지 위 작은 삼각형)
+  if (showHint && myLastShot) {
+    const hx = 340 + 240 * (myLastShot.power / CONFIG.powerMax);
+    ctx.fillStyle = '#c9b46a';
+    ctx.beginPath();
+    ctx.moveTo(hx, HUD_Y + 24);
+    ctx.lineTo(hx - 4, HUD_Y + 17);
+    ctx.lineTo(hx + 4, HUD_Y + 17);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // === 바람 (중앙 오른쪽) ===
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillText('바람', 640, HUD_Y + 18);
+  ctx.font = 'bold 15px "Courier New", monospace';
+  if (windLevel === 0) {
+    ctx.fillStyle = '#6d7a8f';
+    ctx.fillText('없음', 640, HUD_Y + 40);
+  } else {
+    const arrows = (windLevel > 0 ? '→' : '←').repeat(Math.abs(windLevel));
+    ctx.fillStyle = Math.abs(windLevel) >= 4 ? '#ffab5c' : '#cfe8ff';
+    ctx.fillText(arrows, 640, HUD_Y + 40);
+    ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.fillText(`${Math.abs(windLevel)}`, 640, HUD_Y + 58);
+  }
+  ctx.textAlign = 'left';
+
+  // === 적 정보 (오른쪽) ===
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#f56b6b';
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.fillText(`적 · ${enemy.stats.name}`, W - 14, HUD_Y + 20);
+  ctx.textAlign = 'left';
+  bar(W - 164, HUD_Y + 28, 150, 12, enemy.hp / CONFIG.maxHp, hpColor(enemy.hp), '#f56b6b');
+}
+
+function bar(x, y, w, h, ratio, color, border) {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = color;
+  ctx.fillRect(x + 1, y + 1, Math.max(0, (w - 2) * Math.max(0, Math.min(1, ratio))), h - 2);
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+
+function hpColor(hp) {
+  const r = hp / CONFIG.maxHp;
+  return r < 0.3 ? '#f44336' : r < 0.6 ? '#ffc107' : '#4caf50';
+}
+
+// ---------- 메뉴 화면 ----------
+function tankCardRect(i) { return { x: 60 + i * 240, y: 150, w: 200, h: 120 }; }
+function mapCardRect(i)  { return { x: 60 + i * 240, y: 330, w: 200, h: 90 }; }
+function startBtnRect()  { return { x: W / 2 - 120, y: 460, w: 240, h: 46 }; }
+
+function drawMenu() {
+  // 배경
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#141821');
+  bg.addColorStop(1, '#1e2836');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 제목
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 40px "Courier New", monospace';
+  ctx.fillText('F O R T R E S S', W / 2, 70);
+  ctx.fillStyle = '#6d7a8f';
+  ctx.font = '13px "Courier New", monospace';
+  ctx.fillText('탱크와 맵을 고르고 출격하세요', W / 2, 96);
+
+  // --- 탱크 선택 ---
+  ctx.textAlign = 'left';
+  ctx.fillStyle = menuRow === 0 ? '#ffd700' : '#8fa3b8';
+  ctx.font = 'bold 14px "Courier New", monospace';
+  ctx.fillText(menuRow === 0 ? '▶ 1. 탱크 선택' : '  1. 탱크 선택', 60, 138);
+
+  for (let i = 0; i < 3; i++) {
+    const r = tankCardRect(i);
+    const t = TANKS[i];
+    const sel = selTank === i;
+
+    ctx.fillStyle = sel ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = sel ? '#ffd700' : '#3a4a63';
+    ctx.lineWidth = sel ? 3 : 1;
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+
+    // 미니 탱크 그림
+    drawMiniTank(i, r.x + r.w / 2, r.y + 52, t.color);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = t.color;
+    ctx.font = 'bold 15px "Courier New", monospace';
+    ctx.fillText(t.name, r.x + r.w / 2, r.y + 80);
+    ctx.fillStyle = '#8fa3b8';
+    ctx.font = '10px "Courier New", monospace';
+    ctx.fillText(t.desc.split(' — ')[1], r.x + r.w / 2, r.y + 96);
+    ctx.fillStyle = '#c9b46a';
+    ctx.fillText(`한방 ${t.dmg} · 폭발범위 ${t.radius}`, r.x + r.w / 2, r.y + 111);
+    ctx.textAlign = 'left';
+  }
+
+  // --- 맵 선택 ---
+  ctx.fillStyle = menuRow === 1 ? '#ffd700' : '#8fa3b8';
+  ctx.font = 'bold 14px "Courier New", monospace';
+  ctx.fillText(menuRow === 1 ? '▶ 2. 맵 선택' : '  2. 맵 선택', 60, 318);
+
+  for (let i = 0; i < 3; i++) {
+    const r = mapCardRect(i);
+    const m = MAPS[i];
+    const sel = selMap === i;
+
+    // 하늘 미리보기
+    const g = ctx.createLinearGradient(0, r.y, 0, r.y + r.h);
+    g.addColorStop(0, m.sky[0]);
+    g.addColorStop(1, m.sky[1]);
+    ctx.fillStyle = g;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    // 지형 미리보기 (아랫부분 물결)
+    ctx.fillStyle = m.dirt;
+    ctx.beginPath();
+    ctx.moveTo(r.x, r.y + r.h);
+    for (let px = 0; px <= r.w; px += 4) {
+      ctx.lineTo(r.x + px, r.y + r.h - 18 - Math.sin(px * 0.05 + i * 2) * 8);
+    }
+    ctx.lineTo(r.x + r.w, r.y + r.h);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = sel ? '#ffd700' : '#3a4a63';
+    ctx.lineWidth = sel ? 3 : 1;
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText(m.name, r.x + r.w / 2, r.y + r.h - 8);
+    ctx.textAlign = 'left';
+  }
+
+  // --- 시작 버튼 ---
+  const b = startBtnRect();
+  const blink = Math.floor(Date.now() / 400) % 2 === 0;
+  ctx.fillStyle = blink ? 'rgba(255,215,0,0.15)' : 'rgba(255,215,0,0.07)';
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 18px "Courier New", monospace';
+  ctx.fillText('출  격 !', W / 2, b.y + 30);
+
+  ctx.fillStyle = '#556377';
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillText('↑↓ 줄 이동 · ←→ 선택 · Enter 시작  (마우스 클릭도 됩니다)', W / 2, 545);
+  ctx.textAlign = 'left';
+}
+
+// 메뉴 카드용 미니 탱크
+function drawMiniTank(type, cx, cy, color) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1.6, 1.6);
+  ctx.strokeStyle = '#cfd8dc';
+  ctx.lineWidth = type === 1 ? 4 : type === 2 ? 2 : 3;
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.lineTo(14, -18);
+  ctx.stroke();
+  ctx.fillStyle = color;
+  if (type === 1) {
+    ctx.fillRect(-15, -10, 30, 12);
+    ctx.fillRect(-7, -15, 14, 6);
+  } else if (type === 2) {
+    ctx.fillRect(-11, -8, 22, 10);
+    ctx.beginPath(); ctx.arc(0, -8, 6, Math.PI, 0); ctx.fill();
+    ctx.fillRect(7, -20, 2, 10);
+  } else {
+    ctx.fillRect(-12, -9, 24, 11);
+    ctx.beginPath(); ctx.arc(0, -9, 7, Math.PI, 0); ctx.fill();
+  }
+  ctx.fillStyle = '#2b2b3a';
+  ctx.fillRect(-14, 2, 28, 4);
+  ctx.restore();
+}
+
+// ---------- 게임 종료 화면 ----------
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(-20, -20, W + 40, H + 40);
+
+  // 승리 폭죽
+  for (const c of confetti) {
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.spin);
+    ctx.fillStyle = c.color;
+    ctx.fillRect(-c.size / 2, -c.size / 2, c.size, c.size);
+    ctx.restore();
+  }
+
+  ctx.textAlign = 'center';
+  if (winner === 'player') {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 46px "Courier New", monospace';
+    ctx.fillText('승  리 !', W / 2, H / 2 - 30);
+  } else if (winner === 'enemy') {
+    ctx.fillStyle = '#f56b6b';
+    ctx.font = 'bold 46px "Courier New", monospace';
+    ctx.fillText('패  배', W / 2, H / 2 - 30);
+  } else {
+    ctx.fillStyle = '#ccc';
+    ctx.font = 'bold 46px "Courier New", monospace';
+    ctx.fillText('무 승 부', W / 2, H / 2 - 30);
+  }
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px "Courier New", monospace';
+  ctx.fillText('R 재대결  ·  M 처음 화면', W / 2, H / 2 + 24);
+  ctx.textAlign = 'left';
+}
+
+// ---------- 루프 ----------
+// 게임 속도를 모니터 주사율과 분리합니다.
+// 그냥 매 화면마다 update()를 부르면 120Hz 모니터에서는 2배속,
+// 60Hz 모니터에서는 절반 속도가 되어버립니다.
+// 시간을 재서 "1초에 정확히 120번"만 게임을 진행시킵니다.
+const STEP = 1000 / 120;   // 한 걸음 = 1/120초
+let lastTime = 0;
+let acc = 0;
+
+function loop(ts) {
+  if (!lastTime) lastTime = ts;
+  let dt = ts - lastTime;
+  lastTime = ts;
+  if (dt > 100) dt = 100;   // 탭을 오래 벗어났다 돌아와도 몰아서 진행하지 않게 제한
+
+  acc += dt;
+  while (acc >= STEP) {
+    update();
+    acc -= STEP;
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
