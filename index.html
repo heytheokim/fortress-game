@@ -183,6 +183,16 @@ function placeTanks() {
 // ---------- 포탄 ----------
 let bullet = null;
 
+// 포탄을 한 스텝(1/120초)만큼 움직이는 함수.
+// 실제 게임의 포탄과 AI가 머릿속으로 굴려보는 포탄이 반드시 똑같이 날아가야 하므로
+// 물리 계산은 여기 한 곳에만 둡니다. (여길 고치면 양쪽이 함께 바뀝니다)
+function stepProjectile(b) {
+  b.x += b.vx;
+  b.y += b.vy;
+  b.vy += CONFIG.gravity;
+  b.vx += wind;              // 바람이 옆으로 밀어냄
+}
+
 function fire(shooter, angle, powerVal, who) {
   const rad = angle * Math.PI / 180;
   const speed = powerVal * CONFIG.powerScale;
@@ -365,22 +375,25 @@ canvas.addEventListener('click', (e) => {
 function simulateLanding(from, angleDeg, powerVal) {
   const rad = angleDeg * Math.PI / 180;
   const speed = powerVal * CONFIG.powerScale;
-  let x = from.x + Math.cos(rad) * 22;
-  let y = from.y - 14 - Math.sin(rad) * 22;
-  let vx = Math.cos(rad) * speed;
-  let vy = -Math.sin(rad) * speed;
+  // 실제 발사와 똑같은 시작 위치·속도로 가짜 포탄을 하나 만듭니다
+  const b = {
+    x: from.x + Math.cos(rad) * 22,
+    y: from.y - 14 - Math.sin(rad) * 22,
+    vx: Math.cos(rad) * speed,
+    vy: -Math.sin(rad) * speed,
+  };
 
   for (let i = 0; i < 3000; i++) {
-    x += vx; y += vy; vy += CONFIG.gravity; vx += wind;
-    const dx = x - player.x, dy = y - (player.y - 10);
-    if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) return x;
-    if (x < -50 || x > W + 50 || y > GROUND_H + 140) return x;
-    if (y >= 0) {
-      const gx = Math.round(x);
-      if (gx >= 0 && gx < W && y >= terrain[gx]) return x;
+    stepProjectile(b);          // 실제 포탄과 완전히 같은 물리
+    const dx = b.x - player.x, dy = b.y - (player.y - 10);
+    if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) return b.x;
+    if (b.x < -50 || b.x > W + 50 || b.y > GROUND_H + 140) return b.x;
+    if (b.y >= 0) {
+      const gx = Math.round(b.x);
+      if (gx >= 0 && gx < W && b.y >= terrain[gx]) return b.x;
     }
   }
-  return x;
+  return b.x;
 }
 
 // 목표 지점에 맞는 파워를 절반씩 좁혀가며 찾기 (이분 탐색)
@@ -554,10 +567,7 @@ function update() {
     bullet.trail.push({ x: bullet.x, y: bullet.y });
     if (bullet.trail.length > 40) bullet.trail.shift();
 
-    bullet.x += bullet.vx;
-    bullet.y += bullet.vy;
-    bullet.vy += CONFIG.gravity;
-    bullet.vx += wind;              // 바람이 옆으로 밀어냄
+    stepProjectile(bullet);
 
     let hit = false;
     for (const tank of [player, enemy]) {
