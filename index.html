@@ -441,6 +441,12 @@ const player = {
   gauge: 0,             // 오브 게이지 (100이면 필살기 사용 가능)
   stats: TANKS[0],
   name: '나',
+  // --- 움직임 상태 (그림에만 쓰입니다) ---
+  tilt: 0,              // 땅 기울기에 맞춘 몸체 각도
+  recoil: 0,            // 발사 반동 (포신이 뒤로 밀렸다 돌아옴)
+  wheelSpin: 0,         // 바퀴 회전량 (이동하면 굴러갑니다)
+  bob: 0,               // 이동 중 덜컹거림
+  drawAngle: 45,        // 화면에 보이는 포신 각도 (실제 각도를 부드럽게 따라감)
 };
 const enemy = {
   x: 690, y: 0, angle: 135, hp: CONFIG.maxHp,
@@ -448,14 +454,27 @@ const enemy = {
   gauge: 0,
   stats: TANKS[1],
   name: '적',
+  tilt: 0, recoil: 0, wheelSpin: 0, bob: 0, drawAngle: 135,
   moveTarget: null,     // AI가 이번 턴에 이동할 목적지 (없으면 안 움직임)
   lastPower: null, lastAngle: null,
   shotCount: 0,
 };
 
+// 땅의 기울기를 구합니다. 대포가 경사면 위에서 수평으로 떠 있으면 어색하므로
+// 양옆 8px의 높이 차로 각도를 계산해 몸체를 기울입니다.
+function terrainAngle(x) {
+  const xi = Math.round(x);
+  const l = terrain[Math.max(0, xi - 8)];
+  const r = terrain[Math.min(W - 1, xi + 8)];
+  const a = Math.atan2(r - l, 16);
+  return Math.max(-0.5, Math.min(0.5, a));   // ±약 29도까지만 (절벽에서 뒤집히지 않게)
+}
+
 function placeTanks() {
-  player.y = terrain[Math.round(player.x)];
-  enemy.y  = terrain[Math.round(enemy.x)];
+  for (const t of [player, enemy]) {
+    t.y = terrain[Math.round(t.x)];
+    t.tilt = terrainAngle(t.x);
+  }
 }
 
 // ---------- 발사 종류 (원조 포트리스의 1번·2번·오브) ----------
@@ -515,6 +534,10 @@ function fire(shooter, angle, powerVal, who, shotType = 'single') {
   const b0 = bullets[0];
   flashes.push({ x: b0.x, y: b0.y, life: shotType === 'orb' ? 12 : 7,
                  color: shotType === 'orb' ? '#ffe680' : stats.trail });
+
+  // 발사 반동 — 파워가 셀수록, 오브일수록 크게 밀립니다
+  shooter.recoil = (5 + powerVal * 0.06) * (shotType === 'orb' ? 1.8 : 1);
+  shooter.bob = shooter.recoil * 0.35;
   if (shotType === 'orb') SFX.orb(stats); else SFX.fire(stats);
   startFlySound();     // 포탄이 날아가는 동안 "쉬이익" 소리가 이어집니다
 
@@ -928,6 +951,7 @@ function update() {
 
   if (messageTimer > 0) messageTimer--;
   updateAmbient();
+  updateTankMotion();
 
   if (phase === 'gameover') { updateEffects(); return; }
 
@@ -952,15 +976,16 @@ function update() {
     if (keys['ArrowUp'])   player.angle = Math.min(170, player.angle + CONFIG.angleSpeed);
     if (keys['ArrowDown']) player.angle = Math.max(10,  player.angle - CONFIG.angleSpeed);
 
-    if (keys['ArrowLeft'] && player.fuel > 0) {
-      player.x = Math.max(25, player.x - CONFIG.moveSpeed);
+    // 좌우 이동 — 방향만 다르고 나머지는 같아서 한 덩어리로 묶었습니다
+    const dir = keys['ArrowLeft'] ? -1 : keys['ArrowRight'] ? 1 : 0;
+    if (dir !== 0 && player.fuel > 0) {
+      const nx = player.x + dir * CONFIG.moveSpeed;
+      // 왼쪽 끝 25, 오른쪽은 화면 60%까지 (적 진영까지는 못 감)
+      player.x = Math.max(25, Math.min(W * 0.6, nx));
       player.fuel = Math.max(0, player.fuel - CONFIG.moveSpeed);
       player.y = terrain[Math.round(player.x)];
-    }
-    if (keys['ArrowRight'] && player.fuel > 0) {
-      player.x = Math.min(W * 0.6, player.x + CONFIG.moveSpeed);   // 적 진영까지는 못 감
-      player.fuel = Math.max(0, player.fuel - CONFIG.moveSpeed);
-      player.y = terrain[Math.round(player.x)];
+      player.wheelSpin += dir * 0.13;          // 바퀴가 굴러갑니다
+      player.bob = Math.sin(player.wheelSpin * 3) * 1.1;   // 울퉁불퉁한 땅에 덜컹
     }
   }
 
@@ -972,9 +997,12 @@ function update() {
   // --- AI: 먼저 이동하고, 도착하면 생각이 끝난 뒤 발사 ---
   if (phase === 'aiThink') {
     if (enemy.moveTarget !== null && Math.abs(enemy.x - enemy.moveTarget) > 1.5 && enemy.fuel > 0) {
-      enemy.x += Math.sign(enemy.moveTarget - enemy.x) * 0.9;
+      const d = Math.sign(enemy.moveTarget - enemy.x);
+      enemy.x += d * 0.9;
       enemy.fuel = Math.max(0, enemy.fuel - 0.9);    // 연료를 씁니다 (플레이어와 동일)
       enemy.y = terrain[Math.round(enemy.x)];
+      enemy.wheelSpin += d * 0.1;
+      enemy.bob = Math.sin(enemy.wheelSpin * 3) * 1.1;
     } else {
       enemy.moveTarget = null;
       aiTimer--;
@@ -1028,6 +1056,24 @@ function update() {
   }
 
   updateEffects();
+}
+
+// 탱크의 움직임 갱신 (그림에만 영향, 게임 규칙과는 무관합니다)
+function updateTankMotion() {
+  for (const t of [player, enemy]) {
+    // 발사 반동은 서서히 원래대로 돌아옵니다
+    t.recoil *= 0.88;
+    if (t.recoil < 0.05) t.recoil = 0;
+    // 덜컹거림도 서서히 잦아듭니다
+    t.bob *= 0.85;
+    if (Math.abs(t.bob) < 0.05) t.bob = 0;
+    // 포신은 실제 각도를 부드럽게 따라갑니다 (뚝뚝 끊기지 않게)
+    const diff = t.angle - t.drawAngle;
+    t.drawAngle += diff * 0.25;
+    // 땅 기울기도 부드럽게 (크레이터가 파여도 갑자기 획 돌지 않게)
+    const want = terrainAngle(t.x);
+    t.tilt += (want - t.tilt) * 0.15;
+  }
 }
 
 // 배경 장식 움직임 (바람의 방향이 여기서 보입니다)
@@ -1274,50 +1320,188 @@ function drawWindStreaks() {
   ctx.stroke();
 }
 
-// 탱크 (기종마다 실루엣이 다름)
+// 색을 어둡게/밝게 만드는 도우미 (음영을 넣어 입체감을 줍니다)
+function shade(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const cl = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  const r = cl(((n >> 16) & 255) * amount);
+  const g = cl(((n >> 8) & 255) * amount);
+  const b = cl((n & 255) * amount);
+  return `rgb(${r},${g},${b})`;
+}
+
+// 굴러가는 바퀴 하나. spin에 따라 바큇살이 돌아 "구르는 게" 눈에 보입니다.
+function drawWheel(cx, cy, r, spin, color) {
+  ctx.fillStyle = '#22222e';
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(cx, cy, r * 0.42, 0, Math.PI * 2); ctx.fill();
+  // 바큇살 2개 (십자 모양이 돌아갑니다)
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for (let i = 0; i < 2; i++) {
+    const a = spin + i * Math.PI / 2;
+    ctx.moveTo(cx - Math.cos(a) * r * 0.8, cy - Math.sin(a) * r * 0.8);
+    ctx.lineTo(cx + Math.cos(a) * r * 0.8, cy + Math.sin(a) * r * 0.8);
+  }
+  ctx.stroke();
+}
+
+// 탱크 (기종마다 실루엣과 움직임이 다릅니다)
 function drawTank(p) {
   const dead = p.hp <= 0;
-  const rad = p.angle * Math.PI / 180;
-  const c = dead ? '#555' : p.stats.color;
   const type = TANKS.indexOf(p.stats);
+  const c = dead ? '#555' : p.stats.color;
+  const dark = dead ? '#3a3a3a' : shade(p.stats.color, 0.62);
+  const light = dead ? '#6a6a6a' : shade(p.stats.color, 1.25);
+  const hurt = p.hp / CONFIG.maxHp;         // 체력 비율 (낮으면 연기가 납니다)
 
+  ctx.save();
+  // 몸체를 땅 기울기에 맞춰 기울이고, 덜컹거림만큼 위아래로 흔듭니다
+  ctx.translate(p.x, p.y + p.bob);
+  ctx.rotate(p.tilt);
+
+  // --- 포신 (반동으로 뒤로 밀렸다 돌아옵니다) ---
+  // 포신 각도는 플레이어가 정한 값이므로 몸체 기울기를 상쇄해 화면 기준으로 유지합니다
   if (!dead) {
-    ctx.strokeStyle = '#cfd8dc';
-    ctx.lineWidth = type === 1 ? 7 : type === 2 ? 3 : 5;   // 매머드 굵게, 스톰 얇게
+    const rad = p.drawAngle * Math.PI / 180;
+    ctx.save();
+    ctx.rotate(-p.tilt);                    // 기울기 취소 → 포신은 화면 기준
+    const pivotY = -14;
+    const back = p.recoil;                  // 반동으로 밀린 거리
+    const bx = -Math.cos(rad) * back;
+    const by = Math.sin(rad) * back;
+
+    const barrelLen = type === 1 ? 28 : type === 2 ? 24 : 26;
+    const barrelW   = type === 1 ? 8  : type === 2 ? 4  : 6;
+
+    // 포신 본체
+    ctx.strokeStyle = dark;
+    ctx.lineWidth = barrelW + 2;
     ctx.beginPath();
-    ctx.moveTo(p.x, p.y - 14);
-    ctx.lineTo(p.x + Math.cos(rad) * 24, p.y - 14 - Math.sin(rad) * 24);
+    ctx.moveTo(bx, pivotY + by);
+    ctx.lineTo(bx + Math.cos(rad) * barrelLen, pivotY + by - Math.sin(rad) * barrelLen);
     ctx.stroke();
+    ctx.strokeStyle = '#cfd8dc';
+    ctx.lineWidth = barrelW;
+    ctx.beginPath();
+    ctx.moveTo(bx, pivotY + by);
+    ctx.lineTo(bx + Math.cos(rad) * barrelLen, pivotY + by - Math.sin(rad) * barrelLen);
+    ctx.stroke();
+
+    // 포구(총구) — 매머드는 굵은 제동기, 스톰은 얇고 긺
+    ctx.fillStyle = dark;
+    const mx = bx + Math.cos(rad) * barrelLen;
+    const my = pivotY + by - Math.sin(rad) * barrelLen;
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.rotate(-rad);
+    if (type === 1) ctx.fillRect(-4, -6, 8, 12);
+    else if (type === 2) ctx.fillRect(-2, -3, 5, 6);
+    else ctx.fillRect(-3, -4.5, 6, 9);
+    ctx.restore();
+    ctx.restore();
   }
 
-  ctx.fillStyle = c;
-  if (type === 1) {          // 매머드: 크고 각진 몸체
-    ctx.fillRect(p.x - 17, p.y - 16, 34, 16);
-    if (!dead) { ctx.fillRect(p.x - 8, p.y - 22, 16, 7); }
-  } else if (type === 2) {   // 스톰: 날렵한 몸체 + 안테나
-    ctx.fillRect(p.x - 13, p.y - 12, 26, 12);
+  // --- 기종별 몸체 ---
+  if (type === 1) {
+    // 매머드 — 크고 각진 중장갑. 궤도(무한궤도)와 두꺼운 장갑판.
+    ctx.fillStyle = dark;
+    ctx.fillRect(-20, -9, 40, 9);                 // 하부 차체
+    ctx.fillStyle = c;
+    ctx.beginPath();                               // 경사 장갑 (사다리꼴)
+    ctx.moveTo(-19, -10); ctx.lineTo(19, -10);
+    ctx.lineTo(15, -20);  ctx.lineTo(-15, -20);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = light;
+    ctx.fillRect(-15, -20, 30, 3);                 // 윗면 하이라이트
     if (!dead) {
-      ctx.beginPath(); ctx.arc(p.x, p.y - 12, 7, Math.PI, 0); ctx.fill();
-      ctx.fillRect(p.x + 8, p.y - 26, 2, 12);
-      ctx.fillRect(p.x + 6, p.y - 27, 6, 2);
+      ctx.fillStyle = c;
+      ctx.fillRect(-9, -26, 18, 7);                // 포탑
+      ctx.fillStyle = dark;
+      ctx.fillRect(-9, -26, 18, 2);
     }
-  } else {                   // 레이븐: 기본형
-    ctx.fillRect(p.x - 14, p.y - 14, 28, 14);
-    if (!dead) { ctx.beginPath(); ctx.arc(p.x, p.y - 14, 9, Math.PI, 0); ctx.fill(); }
+  } else if (type === 2) {
+    // 스톰 — 날렵한 저차체 + 레이더 접시 + 안테나
+    ctx.fillStyle = dark;
+    ctx.fillRect(-15, -8, 30, 8);
+    ctx.fillStyle = c;
+    ctx.beginPath();                               // 앞이 뾰족한 유선형
+    ctx.moveTo(-15, -9); ctx.lineTo(13, -9);
+    ctx.lineTo(16, -14); ctx.lineTo(-11, -16);
+    ctx.closePath(); ctx.fill();
+    if (!dead) {
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(0, -16, 6, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = light;
+      ctx.beginPath(); ctx.arc(0, -16, 3, Math.PI, 0); ctx.fill();
+      // 레이더 접시가 천천히 돕니다
+      ctx.strokeStyle = light;
+      ctx.lineWidth = 1.6;
+      const spin2 = Math.sin(Date.now() / 400) * 0.8;
+      ctx.save();
+      ctx.translate(9, -20); ctx.rotate(spin2);
+      ctx.beginPath(); ctx.arc(0, 0, 4.5, -Math.PI * 0.85, -Math.PI * 0.15); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = dark;
+      ctx.fillRect(8.2, -20, 1.6, 6);              // 안테나 기둥
+    }
+  } else {
+    // 레이븐 — 정직한 표준형. 둥근 포탑 + 측면 장갑.
+    ctx.fillStyle = dark;
+    ctx.fillRect(-17, -9, 34, 9);
+    ctx.fillStyle = c;
+    ctx.fillRect(-16, -16, 32, 8);
+    ctx.fillStyle = light;
+    ctx.fillRect(-16, -16, 32, 2);
+    if (!dead) {
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(0, -16, 8.5, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = light;
+      ctx.beginPath(); ctx.arc(-2, -17, 3.5, Math.PI, 0); ctx.fill();
+    }
   }
 
-  // 바퀴
-  ctx.fillStyle = '#2b2b3a';
-  ctx.fillRect(p.x - 16, p.y - 4, 32, 5);
+  // --- 바퀴 (기종마다 개수·크기가 다르고, 이동하면 굴러갑니다) ---
+  const wheels = type === 1 ? [-14, -5, 5, 14]      // 매머드: 4개 (중장갑)
+               : type === 2 ? [-10, 2, 11]          // 스톰: 3개 (경량)
+               : [-12, 0, 12];                      // 레이븐: 3개
+  const wr = type === 1 ? 5 : type === 2 ? 3.6 : 4.4;
+  for (const wx of wheels) drawWheel(wx, -wr + 1, wr, p.wheelSpin, dark);
+
+  // 매머드는 무한궤도 띠를 하나 더 두릅니다
+  if (type === 1) {
+    ctx.strokeStyle = dead ? '#3a3a3a' : '#3d3d4d';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-19, -9, 38, 10);
+  }
+
+  ctx.restore();
+
+  // --- 피해 상태: 체력이 낮으면 연기가 피어오릅니다 ---
+  if (!dead && hurt < 0.45) {
+    const puffs = hurt < 0.2 ? 3 : 2;
+    for (let i = 0; i < puffs; i++) {
+      const t = (Date.now() / 520 + i * 0.45) % 1;
+      ctx.globalAlpha = (1 - t) * (hurt < 0.2 ? 0.5 : 0.32);
+      ctx.fillStyle = hurt < 0.2 ? '#5a5a64' : '#7a7a86';
+      ctx.beginPath();
+      ctx.arc(p.x + 6 + Math.sin(t * 5 + i) * 4, p.y - 26 - t * 26, 3 + t * 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // 현재 차례 화살표
   const myTurn = (turn === 'player' && p === player) || (turn === 'enemy' && p === enemy);
   if (myTurn && phase !== 'gameover' && !dead) {
     ctx.fillStyle = c;
+    const fy = Math.sin(Date.now() / 300) * 3;    // 위아래로 살랑
     ctx.beginPath();
-    ctx.moveTo(p.x, p.y - 44);
-    ctx.lineTo(p.x - 7, p.y - 56);
-    ctx.lineTo(p.x + 7, p.y - 56);
+    ctx.moveTo(p.x, p.y - 44 + fy);
+    ctx.lineTo(p.x - 7, p.y - 56 + fy);
+    ctx.lineTo(p.x + 7, p.y - 56 + fy);
     ctx.closePath();
     ctx.fill();
   }
@@ -1522,7 +1706,7 @@ function drawMenu() {
     ctx.strokeRect(r.x, r.y, r.w, r.h);
 
     // 미니 탱크 그림
-    drawMiniTank(i, r.x + r.w / 2, r.y + 50, t.color);
+    drawMiniTank(i, r.x + r.w / 2, r.y + 46, t.color, 1.15);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = t.color;
@@ -1564,7 +1748,7 @@ function drawMenu() {
       ctx.font = '9px "Courier New", monospace';
       ctx.fillText('붙어봐야 앎', r.x + 100, r.y + 42);
     } else {
-      drawMiniTank(i, r.x + 30, r.y + 34, t.color);
+      drawMiniTank(i, r.x + 32, r.y + 30, t.color, 0.62);
       ctx.textAlign = 'center';
       ctx.fillStyle = t.color;
       ctx.font = 'bold 13px "Courier New", monospace';
@@ -1633,31 +1817,57 @@ function drawMenu() {
   ctx.textAlign = 'left';
 }
 
-// 메뉴 카드용 미니 탱크
-function drawMiniTank(type, cx, cy, color) {
+// 메뉴 카드용 미니 탱크.
+// 실제 게임의 drawTank와 같은 모양을 그려서, 고른 것과 나오는 게 일치하게 합니다.
+function drawMiniTank(type, cx, cy, color, scale = 1) {
+  const dark = shade(color, 0.62);
+  const light = shade(color, 1.25);
   ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(1.6, 1.6);
-  ctx.strokeStyle = '#cfd8dc';
-  ctx.lineWidth = type === 1 ? 4 : type === 2 ? 2 : 3;
-  ctx.beginPath();
-  ctx.moveTo(0, -8);
-  ctx.lineTo(14, -18);
-  ctx.stroke();
-  ctx.fillStyle = color;
+  ctx.translate(cx, cy + 8 * scale);
+  ctx.scale(scale, scale);
+
+  // 포신
+  const rad = 32 * Math.PI / 180;
+  const bl = type === 1 ? 28 : type === 2 ? 24 : 26;
+  const bw = type === 1 ? 8 : type === 2 ? 4 : 6;
+  ctx.strokeStyle = dark; ctx.lineWidth = bw + 2;
+  ctx.beginPath(); ctx.moveTo(0, -14);
+  ctx.lineTo(Math.cos(rad) * bl, -14 - Math.sin(rad) * bl); ctx.stroke();
+  ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = bw;
+  ctx.beginPath(); ctx.moveTo(0, -14);
+  ctx.lineTo(Math.cos(rad) * bl, -14 - Math.sin(rad) * bl); ctx.stroke();
+
   if (type === 1) {
-    ctx.fillRect(-15, -10, 30, 12);
-    ctx.fillRect(-7, -15, 14, 6);
+    ctx.fillStyle = dark; ctx.fillRect(-20, -9, 40, 9);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(-19, -10); ctx.lineTo(19, -10);
+    ctx.lineTo(15, -20); ctx.lineTo(-15, -20);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = light; ctx.fillRect(-15, -20, 30, 3);
+    ctx.fillStyle = color; ctx.fillRect(-9, -26, 18, 7);
   } else if (type === 2) {
-    ctx.fillRect(-11, -8, 22, 10);
-    ctx.beginPath(); ctx.arc(0, -8, 6, Math.PI, 0); ctx.fill();
-    ctx.fillRect(7, -20, 2, 10);
+    ctx.fillStyle = dark; ctx.fillRect(-15, -8, 30, 8);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(-15, -9); ctx.lineTo(13, -9);
+    ctx.lineTo(16, -14); ctx.lineTo(-11, -16);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -16, 6, Math.PI, 0); ctx.fill();
+    ctx.strokeStyle = light; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(9, -20, 4.5, -Math.PI * 0.85, -Math.PI * 0.15); ctx.stroke();
+    ctx.fillStyle = dark; ctx.fillRect(8.2, -20, 1.6, 6);
   } else {
-    ctx.fillRect(-12, -9, 24, 11);
-    ctx.beginPath(); ctx.arc(0, -9, 7, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = dark; ctx.fillRect(-17, -9, 34, 9);
+    ctx.fillStyle = color; ctx.fillRect(-16, -16, 32, 8);
+    ctx.fillStyle = light; ctx.fillRect(-16, -16, 32, 2);
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(0, -16, 8.5, Math.PI, 0); ctx.fill();
   }
-  ctx.fillStyle = '#2b2b3a';
-  ctx.fillRect(-14, 2, 28, 4);
+
+  const wheels = type === 1 ? [-14, -5, 5, 14] : type === 2 ? [-10, 2, 11] : [-12, 0, 12];
+  const wr = type === 1 ? 5 : type === 2 ? 3.6 : 4.4;
+  for (const wx of wheels) drawWheel(wx, -wr + 1, wr, 0, dark);
   ctx.restore();
 }
 
