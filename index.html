@@ -393,27 +393,28 @@ const TANKS = [
   //   cluster — 공중에서 갈라져 여러 발이 쏟아짐
   //   drill   — 땅을 깊게 파고 들어가 터짐 (지형 파괴 특화)
   { name: '레이븐',  desc: '균형형 — 무난하고 정직한 주력기',
-    color: '#4ec9f5', dmg: 58, radius: 35, proj: 'normal',
+    color: '#4ec9f5', dmg: 62, radius: 39, proj: 'normal',
     trail: '#ffe680', expl: ['#ff9d2e', '#ffe15c'], shell: 3, shake: 9 },
-  { name: '매머드',  desc: '한방형 — 좁지만 정통이면 강력',
-    color: '#f5a623', dmg: 78, radius: 26, proj: 'normal',
+  { name: '매머드',  desc: '한방형 — 위력이 가장 세지만 무거움',
+    color: '#f5a623', dmg: 70, radius: 36, proj: 'normal',
     trail: '#ff8a5c', expl: ['#ff5c2e', '#ffd15c'], shell: 5, shake: 14 },
-  { name: '스톰',    desc: '광역형 — 넓게 맞지만 가볍게',
-    color: '#a98df5', dmg: 42, radius: 50, proj: 'normal',
+  { name: '스톰',    desc: '광역형 — 가장 넓게 터져 빗나가도 닿음',
+    color: '#a98df5', dmg: 46, radius: 52, proj: 'normal',
     trail: '#c9a6ff', expl: ['#7b5cff', '#d9e6ff'], shell: 3, shake: 7 },
-  { name: '랜스',    desc: '관통형 — 빠르고 바람에 강한 화살탄',
-    color: '#5ce0b0', dmg: 52, radius: 28, proj: 'arrow',
+  { name: '랜스',    desc: '관통형 — 바람을 거의 타지 않는 화살탄',
+    color: '#5ce0b0', dmg: 56, radius: 36, proj: 'arrow',
     trail: '#aef5dc', expl: ['#2ec98f', '#c9ffe8'], shell: 3, shake: 8,
-    speedMul: 1.22, windMul: 0.45 },
+    speedMul: 1.06, windMul: 0.15 },
   { name: '볼링',    desc: '굴림형 — 떨어진 뒤 굴러가서 터짐',
-    color: '#f56b9e', dmg: 50, radius: 38, proj: 'roller',
-    trail: '#ffc2da', expl: ['#f5426e', '#ffd0e0'], shell: 4, shake: 10 },
+    color: '#f56b9e', dmg: 40, radius: 34, proj: 'roller',
+    trail: '#ffc2da', expl: ['#f5426e', '#ffd0e0'], shell: 4, shake: 10,
+    rollSteps: 70 },
   { name: '스웜',    desc: '분열형 — 공중에서 갈라져 쏟아짐',
-    color: '#ffd34e', dmg: 26, radius: 24, proj: 'cluster',
+    color: '#ffd34e', dmg: 25, radius: 26, proj: 'cluster',
     trail: '#fff0a8', expl: ['#ffb02e', '#fff3c9'], shell: 2, shake: 6,
     clusterN: 4, clusterAt: 0.62 },
   { name: '드릴',    desc: '굴착형 — 땅을 깊이 파고 터짐',
-    color: '#b0b8c4', dmg: 46, radius: 42, proj: 'drill',
+    color: '#b0b8c4', dmg: 52, radius: 46, proj: 'drill',
     trail: '#dfe6ee', expl: ['#8a94a3', '#e6edf5'], shell: 4, shake: 12,
     digBonus: 1.6 },
 ];
@@ -1017,8 +1018,13 @@ function addGauge(tank, amount) {
 }
 
 function applyDamage(tank, ex, ey, stats, isSelf = false) {
-  const dx = tank.x - ex;
-  const dy = (tank.y - 8) - ey;
+  // 거리는 '대포의 몸통 상자'까지의 최단 거리로 잽니다.
+  // 예전엔 몸통 중심점(tank.y - 8) 한 점까지의 거리로 쟀는데, 포탄은 지면
+  // (tank.y)에서 멈추므로 발밑에 정확히 떨어져도 이미 ~20px 떨어진 것으로
+  // 계산돼 표기 데미지의 절반밖에 안 들어갔습니다(매머드 72 → 실제 33).
+  const halfW = 17, top = tank.y - 24, bottom = tank.y;
+  const dx = Math.max(0, Math.abs(ex - tank.x) - halfW);
+  const dy = ey < top ? top - ey : ey > bottom ? ey - bottom : 0;
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist > stats.radius) return;
 
@@ -1660,7 +1666,8 @@ function updateBullets() {
           // --- 볼링(굴림탄): 땅에 닿으면 터지지 않고 굴러갑니다 ---
           if (b.proj === 'roller' && !b.rolling) {
             b.rolling = true;
-            b.rollLeft = 150;              // 최대 150스텝(약 1.2초) 구릅니다
+            const rst = b.who === 'player' ? player.stats : enemy.stats;
+            b.rollLeft = rst.rollSteps ?? 150;   // 기종별 구르는 거리
             b.vy = 0;
             b.vx *= 0.55;
             SFX.bounce();
