@@ -76,7 +76,7 @@ const CONFIG = {
   powerSpeed: 1.1,
   powerScale: 0.10,     // 최대 파워로 45도 발사 시 화면 끝에 겨우 닿는 값
   angleSpeed: 1,
-  maxHp: 100,
+  maxHp: 115,      // 데미지 판정을 고친 뒤 판이 짧아져 100 -> 115로 소폭 상향
   hitRadius: 16,        // 포탄이 대포에 직격했다고 보는 거리
 
   fuelMax: 70,          // 한 턴에 움직일 수 있는 거리(픽셀)
@@ -662,6 +662,58 @@ const SHOTS = {
             dmgCap: 82 },
 };
 
+// ---------- 전적 기록 (브라우저에 저장) ----------
+// 다시 열어도 남아 있어서 동료끼리 "몇 연승?" 경쟁이 생깁니다.
+const RECORD_KEY = 'fortress_record';
+let record = loadRecord();
+
+function loadRecord() {
+  const blank = { wins: 0, losses: 0, draws: 0, streak: 0, bestStreak: 0 };
+  try {
+    const raw = localStorage.getItem(RECORD_KEY);
+    if (!raw) return blank;
+    const r = JSON.parse(raw);
+    // 저장된 값이 깨져 있어도 게임이 멈추지 않게 하나씩 확인합니다
+    for (const k of Object.keys(blank)) {
+      if (typeof r[k] === 'number' && isFinite(r[k]) && r[k] >= 0) blank[k] = Math.floor(r[k]);
+    }
+    return blank;
+  } catch (e) {
+    return blank;
+  }
+}
+
+function saveRecord() {
+  try { localStorage.setItem(RECORD_KEY, JSON.stringify(record)); } catch (e) { /* 저장 실패는 무시 */ }
+}
+
+function addResult(result) {
+  if (result === 'player') {
+    record.wins++;
+    record.streak++;
+    if (record.streak > record.bestStreak) record.bestStreak = record.streak;
+  } else if (result === 'enemy') {
+    record.losses++;
+    record.streak = 0;
+  } else {
+    record.draws++;
+  }
+  saveRecord();
+}
+
+function resetRecord() {
+  record = { wins: 0, losses: 0, draws: 0, streak: 0, bestStreak: 0 };
+  saveRecord();
+}
+
+// ---------- 이번 판 통계 (종료 화면에 보여줍니다) ----------
+let matchStats = null;
+
+function newMatchStats() {
+  return { shots: 0, hits: 0, dmgDealt: 0, dmgTaken: 0, bestHit: 0,
+           orbsUsed: 0, itemsGot: 0, turns: 0, startedAt: Date.now() };
+}
+
 // ---------- 포탄 속도 곡선 (영상 편집의 '속도 그래프'와 같은 개념) ----------
 // 포탄이 처음부터 끝까지 같은 속도로 날면 밋밋합니다. 그래서 '보여주는 속도'를
 // 구간마다 다르게 합니다:
@@ -777,6 +829,7 @@ function pickupItem(tank, def) {
 
   damageTexts.push({ x: tank.x, y: tank.y - 34, value: 0, life: 1,
                      pickup: def.name, color: def.color });
+  if (matchStats && tank === player) matchStats.itemsGot++;
   SFX.itemGet();
   showMessage(`${mine ? '내' : '적'}가 ${def.name} 획득! · ${def.desc}`, 80);
   // 획득 반짝임
@@ -888,6 +941,11 @@ function fire(shooter, angle, powerVal, who, shotType = 'single') {
   // 내 발사 기록 (HUD 힌트용)
   if (who === 'player') {
     myLastShot = { angle: Math.round(angle), power: Math.round(powerVal), shot: shotType };
+    if (matchStats) {
+      matchStats.shots++;
+      if (shotType === 'orb') matchStats.orbsUsed++;
+      matchStats.thisShotHit = false;    // 이번 발이 맞았는지 표시용
+    }
     if (shotType === 'orb') player.gauge = 0;      // 오브를 쓰면 게이지 소진
   } else if (shotType === 'orb') {
     enemy.gauge = 0;
@@ -1044,6 +1102,17 @@ function applyDamage(tank, ex, ey, stats, isSelf = false) {
     damageTexts.push({ x: tank.x, y: tank.y - 30, value: dmg, life: 1, self: isSelf });
     if (tank === player) SFX.hit();     // 내가 맞았을 때만 경고음
 
+    if (matchStats) {
+      if (tank === enemy) {             // 내가 적을 맞힘
+        matchStats.dmgDealt += dmg;
+        if (dmg > matchStats.bestHit) matchStats.bestHit = dmg;
+        // 한 발에 여러 번 데미지가 들어가도(스웜) 명중은 1회로 셉니다
+        if (!matchStats.thisShotHit) { matchStats.hits++; matchStats.thisShotHit = true; }
+      } else if (!isSelf) {
+        matchStats.dmgTaken += dmg;
+      }
+    }
+
     // 오브 게이지: 맞힌 쪽은 많이, 맞은 쪽도 조금 찹니다 (지고 있어도 역전 기회)
     if (!isSelf) {
       const attacker = tank === player ? enemy : player;
@@ -1198,6 +1267,7 @@ const keys = {};
 let charging = false;
 let power = 0;
 let selShot = 'single';    // 지금 고른 발사 종류 (1 / 2 / S 키로 변경)
+let resetArmed = false;    // 전적 초기화를 한 번 눌러 예약한 상태
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
@@ -1223,6 +1293,19 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'ArrowUp')    { menuRow = (menuRow + 3) % 4; SFX.click(); }
     if (e.code === 'ArrowDown')  { menuRow = (menuRow + 1) % 4; SFX.click(); }
     if (e.code === 'Enter' || e.code === 'Space') startGame();
+    // 전적 초기화 — 실수로 지우지 않도록 두 번 눌러야 합니다
+    if (e.code === 'Backspace') {
+      if (resetArmed) {
+        resetRecord(); resetArmed = false;
+        showMessage('전적을 초기화했습니다', 90);
+        SFX.click();
+      } else {
+        resetArmed = true;
+        showMessage('한 번 더 누르면 전적이 지워집니다', 120);
+      }
+    } else if (e.code !== 'Backspace') {
+      resetArmed = false;      // 다른 키를 누르면 취소
+    }
     return;
   }
 
@@ -1386,11 +1469,14 @@ function nextTurn() {
     phase = 'gameover';
     winner = (enemy.hp <= 0 && player.hp > 0) ? 'player'
            : (player.hp <= 0 && enemy.hp > 0) ? 'enemy' : 'draw';
+    if (matchStats) matchStats.endedAt = Date.now();
+    addResult(winner);                 // 전적에 기록 (브라우저에 저장)
     if (winner === 'player') { spawnConfetti(); SFX.win(); } else SFX.lose();
     return;
   }
 
   player.fallDealt = 0; enemy.fallDealt = 0;   // 낙하 데미지 누적치 초기화
+  if (matchStats) matchStats.turns++;
   rollWind();   // 턴마다 바람이 새로 붑니다
 
   // 보급품 투하 — 3턴에 한 번씩, 화면에 2개까지만
@@ -1483,6 +1569,7 @@ function newGame() {
   shake = 0;
   rollWind();
 
+  matchStats = newMatchStats();
   turn = 'player';
   phase = 'aiming';
   winner = null;
@@ -1495,7 +1582,8 @@ function newGame() {
 
 // ---------- 갱신 ----------
 function update() {
-  if (phase === 'menu') return;
+  // 메뉴에서도 안내 문구는 사라져야 하므로 타이머만 돌립니다
+  if (phase === 'menu') { if (messageTimer > 0) messageTimer--; return; }
 
   if (messageTimer > 0) messageTimer--;
   updateAmbient();
@@ -2816,9 +2904,44 @@ function drawMenu() {
   ctx.fillStyle = '#556377';
   ctx.font = '10px "Courier New", monospace';
   ctx.fillText('↑↓ 줄 이동 · ←→ 선택 · 마우스 클릭도 됩니다', b.x + b.w / 2, 660);
+
+  // 통산 전적 (한 판이라도 했을 때만)
+  const total = record.wins + record.losses + record.draws;
+  if (total > 0) {
+    const winPct = Math.round(100 * record.wins / total);
+    ctx.font = '11px "Courier New", monospace';
+    ctx.fillStyle = '#7e8fa5';
+    let txt = `전적 ${record.wins}승 ${record.losses}패`;
+    if (record.draws) txt += ` ${record.draws}무`;
+    txt += `  ·  승률 ${winPct}%`;
+    if (record.bestStreak >= 2) txt += `  ·  최고 ${record.bestStreak}연승`;
+    ctx.fillText(txt, b.x + b.w / 2, 682);
+    if (record.streak >= 2) {
+      ctx.fillStyle = '#ff9d2e';
+      ctx.font = 'bold 12px "Courier New", monospace';
+      ctx.fillText(`${record.streak}연승 중!`, b.x + b.w / 2, 700);
+    } else {
+      ctx.fillStyle = '#4a5568';
+      ctx.font = '10px "Courier New", monospace';
+      ctx.fillText('Backspace 두 번 누르면 전적 초기화', b.x + b.w / 2, 700);
+    }
+  }
   ctx.textAlign = 'left';
 
   drawControlsPanel();
+
+  // 안내 문구 (전적 초기화 확인 등)
+  if (messageTimer > 0 && message) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(W / 2 - 210, 20, 420, 34);
+    ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 1;
+    ctx.strokeRect(W / 2 - 209.5, 20.5, 419, 33);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText(message, W / 2, 42);
+    ctx.textAlign = 'left';
+  }
 }
 
 // 오른쪽 조작표 — 처음 여는 사람이 조작법을 바로 알 수 있게 게임 화면 안에 둡니다
@@ -2902,7 +3025,7 @@ function drawMiniTank(type, cx, cy, color, scale = 1) {
 
 // ---------- 게임 종료 화면 ----------
 function drawGameOver() {
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
   ctx.fillRect(-20, -20, W + 40, H + 40);
 
   // 승리 폭죽
@@ -2915,25 +3038,89 @@ function drawGameOver() {
     ctx.restore();
   }
 
+  const cx = W / 2;
+  const panelW = 520, panelH = 400;
+  const px = cx - panelW / 2, py = H / 2 - panelH / 2 - 10;
+
+  // 패널
+  ctx.fillStyle = 'rgba(20,26,36,0.92)';
+  ctx.fillRect(px, py, panelW, panelH);
+  ctx.strokeStyle = winner === 'player' ? '#ffd700' : winner === 'enemy' ? '#f56b6b' : '#8fa3b8';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(px + 1.5, py + 1.5, panelW - 3, panelH - 3);
+
   ctx.textAlign = 'center';
-  if (winner === 'player') {
-    ctx.fillStyle = '#ffd700';
-    ctx.font = 'bold 46px "Courier New", monospace';
-    ctx.fillText('승  리 !', W / 2, H / 2 - 30);
-  } else if (winner === 'enemy') {
-    ctx.fillStyle = '#f56b6b';
-    ctx.font = 'bold 46px "Courier New", monospace';
-    ctx.fillText('패  배', W / 2, H / 2 - 30);
-  } else {
-    ctx.fillStyle = '#ccc';
-    ctx.font = 'bold 46px "Courier New", monospace';
-    ctx.fillText('무 승 부', W / 2, H / 2 - 30);
+
+  // 큰 결과 문구
+  const title = winner === 'player' ? '승  리 !' : winner === 'enemy' ? '패  배' : '무 승 부';
+  ctx.fillStyle = winner === 'player' ? '#ffd700' : winner === 'enemy' ? '#f56b6b' : '#ccc';
+  ctx.font = 'bold 44px "Courier New", monospace';
+  ctx.fillText(title, cx, py + 62);
+
+  // 연승 표시 (이겼고 2연승 이상일 때만)
+  if (winner === 'player' && record.streak >= 2) {
+    ctx.fillStyle = '#ff9d2e';
+    ctx.font = 'bold 20px "Courier New", monospace';
+    ctx.fillText(`${record.streak} 연승 중!`, cx, py + 92);
+  } else if (winner === 'enemy' && record.bestStreak >= 2) {
+    ctx.fillStyle = '#8fa3b8';
+    ctx.font = '13px "Courier New", monospace';
+    ctx.fillText(`연승 기록이 끊겼습니다 (최고 ${record.bestStreak}연승)`, cx, py + 90);
   }
+
+  // ── 이번 판 요약 ──
+  const st = matchStats;
+  let y = py + 128;
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = 'bold 12px "Courier New", monospace';
+  ctx.fillText('― 이번 판 ―', cx, y);
+  y += 26;
+
+  if (st) {
+    const acc = st.shots > 0 ? Math.round(100 * st.hits / st.shots) : 0;
+    const secs = Math.round(((st.endedAt || Date.now()) - st.startedAt) / 1000);
+    const mm = Math.floor(secs / 60), ss = secs % 60;
+    const rows = [
+      ['명중률', `${acc}%  (${st.hits}/${st.shots}발)`],
+      ['준 피해', `${st.dmgDealt}`],
+      ['받은 피해', `${st.dmgTaken}`],
+      ['최고 한 방', `${st.bestHit}`],
+      ['오브 사용', `${st.orbsUsed}회`],
+      ['주운 아이템', `${st.itemsGot}개`],
+      ['걸린 시간', `${mm}분 ${ss}초`],
+    ];
+    ctx.font = '13px "Courier New", monospace';
+    for (const [k, v] of rows) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#7e8fa5';
+      ctx.fillText(k, cx - 14, y);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#e8f0fa';
+      ctx.fillText(v, cx + 14, y);
+      y += 21;
+    }
+  }
+
+  // ── 통산 전적 ──
+  y += 10;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#3a4a63';
+  ctx.fillRect(px + 60, y - 12, panelW - 120, 1);
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '12px "Courier New", monospace';
+  const total = record.wins + record.losses + record.draws;
+  const winPct = total > 0 ? Math.round(100 * record.wins / total) : 0;
+  ctx.fillText(`통산 ${record.wins}승 ${record.losses}패` +
+               (record.draws ? ` ${record.draws}무` : '') +
+               `  ·  승률 ${winPct}%  ·  최고 ${record.bestStreak}연승`, cx, y + 10);
+
+  // 안내
   ctx.fillStyle = '#fff';
-  ctx.font = 'bold 16px "Courier New", monospace';
-  ctx.fillText('R 재대결  ·  M 처음 화면', W / 2, H / 2 + 24);
+  ctx.font = 'bold 15px "Courier New", monospace';
+  ctx.fillText('R 재대결   ·   M 처음 화면', cx, py + panelH - 22);
   ctx.textAlign = 'left';
 }
+
 
 // ---------- 루프 ----------
 // 게임 속도를 모니터 주사율과 분리합니다.
