@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>포트리스 클론 - 4단계</title>
+<title>FORTRESS — 포탄 대전 게임</title>
+<meta name="description" content="바람을 읽고 각도와 파워를 맞춰 상대 탱크를 쓰러뜨리는 1:1 포탄 대전 게임. 탱크 3종·맵 3종·필살기 오브.">
+<meta property="og:title" content="FORTRESS — 포탄 대전 게임">
+<meta property="og:description" content="바람을 읽고 각도와 파워를 맞춰 상대를 쓰러뜨리세요. 탱크 3종·맵 3종·필살기 오브.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💥</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -45,7 +50,8 @@
 
   <div id="help">
     <b>← →</b> 이동(연료 소모) &nbsp; <b>↑ ↓</b> 각도 &nbsp; <b>스페이스 꾹</b> 파워→발사 &nbsp;
-    <b>1 2</b> 발사 종류 &nbsp; <b>S</b> 오브(필살기) &nbsp; <b>H</b> 힌트 &nbsp; <b>X</b> 음소거 &nbsp; <b>R</b> 재대결 &nbsp; <b>M</b> 처음
+    <b>↑↓</b> 각도 &nbsp; <b>←→</b> 이동 &nbsp; <b>스페이스 꾹</b> 발사 &nbsp;
+    <b>1 2 S</b> 발사 종류 &nbsp; <b>M</b> 처음 화면(조작법 전체)
   </div>
 
 <script>
@@ -90,6 +96,7 @@ const CONFIG = {
   turnTime: 20,         // 내 차례 제한 시간(초). 다 되면 자동으로 턴이 넘어갑니다
 
   aiThinkTime: 55,
+  // 아래 세 값은 난이도에 따라 DIFFICULTY에서 덮어씁니다 (기본=보통)
   aiFirstError: 320,    // 40판씩 돌려 맞춘 값 — 줄이면 AI가 급격히 강해짐
   aiErrorDecay: 0.65,
   aiMinError: 32,
@@ -368,6 +375,31 @@ const TANKS = [
     color: '#a98df5', dmg: 42, radius: 50,
     trail: '#c9a6ff', expl: ['#7b5cff', '#d9e6ff'], shell: 3, shake: 7 },
 ];
+
+// ---------- AI 난이도 ----------
+// firstError: 첫 발이 빗나가는 거리(px) / decay: 쏠 때마다 오차가 줄어드는 비율
+// minError: 아무리 쏴도 남는 최소 오차 — 이게 작을수록 후반에 정확해집니다.
+// 수치는 각 난이도로 판을 돌려 승률을 확인하며 맞췄습니다.
+// 각 난이도로 30판씩 돌려 승률을 확인하며 맞춘 값입니다 (사람=예전 '보통' 실력 가정).
+//   쉬움 97% / 보통 53% / 어려움 13%
+// 예전 값(320/0.65/32)을 보통으로 두면 승률이 77%로 너무 쉬웠습니다.
+// 먼저 쏘는 쪽이 유리해서, 같은 실력이어도 플레이어가 이깁니다.
+const DIFFICULTY = [
+  { name: '쉬움',   desc: '천천히 배우기 좋음',     firstError: 460, decay: 0.82, minError: 78, color: '#7ec850' },
+  { name: '보통',   desc: '사람처럼 점점 정확해짐', firstError: 280, decay: 0.58, minError: 24, color: '#e8c14a' },
+  { name: '어려움', desc: '몇 발이면 정확히 맞춤',   firstError: 190, decay: 0.48, minError: 12, color: '#f56b6b' },
+];
+let selDiff = Number(localStorage.getItem('fortress_diff') ?? 1);
+if (!(selDiff >= 0 && selDiff <= 2)) selDiff = 1;
+
+// 고른 난이도를 CONFIG에 반영합니다
+function applyDifficulty() {
+  const d = DIFFICULTY[selDiff];
+  CONFIG.aiFirstError = d.firstError;
+  CONFIG.aiErrorDecay = d.decay;
+  CONFIG.aiMinError  = d.minError;
+  localStorage.setItem('fortress_diff', String(selDiff));
+}
 
 // ---------- 맵 3종 ----------
 // sky: 하늘 그라데이션 / dirt: 흙색 / top: 지표면 색 / deco: 배경 장식 종류
@@ -854,19 +886,20 @@ window.addEventListener('keydown', (e) => {
 
   // --- 메뉴 화면 조작 ---
   if (phase === 'menu') {
-    // 줄마다 칸 수가 다릅니다: 내 탱크 3 / 상대 탱크 4(무작위 포함) / 맵 3
-    const counts = [3, 4, 3];
+    // 줄마다 칸 수가 다릅니다: 내 탱크 3 / 상대 4(무작위 포함) / 난이도 3 / 맵 3
+    const counts = [3, 4, 3, 3];
     const move = (dir) => {
       const n = counts[menuRow];
       if (menuRow === 0)      selTank  = (selTank  + dir + n) % n;
       else if (menuRow === 1) selEnemy = (selEnemy + dir + n) % n;
+      else if (menuRow === 2) { selDiff = (selDiff + dir + n) % n; applyDifficulty(); }
       else                    selMap   = (selMap   + dir + n) % n;
       SFX.click();
     };
     if (e.code === 'ArrowLeft')  move(-1);
     if (e.code === 'ArrowRight') move(1);
-    if (e.code === 'ArrowUp')    { menuRow = (menuRow + 2) % 3; SFX.click(); }
-    if (e.code === 'ArrowDown')  { menuRow = (menuRow + 1) % 3; SFX.click(); }
+    if (e.code === 'ArrowUp')    { menuRow = (menuRow + 3) % 4; SFX.click(); }
+    if (e.code === 'ArrowDown')  { menuRow = (menuRow + 1) % 4; SFX.click(); }
     if (e.code === 'Enter' || e.code === 'Space') startGame();
     return;
   }
@@ -929,7 +962,8 @@ canvas.addEventListener('click', (e) => {
   for (let i = 0; i < 4; i++) {
     if (i < 3) {
       if (inside(tankCardRect(i))) { selTank = i; menuRow = 0; SFX.click(); return; }
-      if (inside(mapCardRect(i)))  { selMap  = i; menuRow = 2; SFX.click(); return; }
+      if (inside(diffCardRect(i))) { selDiff = i; menuRow = 2; applyDifficulty(); SFX.click(); return; }
+      if (inside(mapCardRect(i)))  { selMap  = i; menuRow = 3; SFX.click(); return; }
     }
     if (inside(enemyCardRect(i)))  { selEnemy = i; menuRow = 1; SFX.click(); return; }
   }
@@ -1073,6 +1107,7 @@ function spawnConfetti() {
 
 // ---------- 게임 시작 ----------
 function startGame() {
+  applyDifficulty();          // 고른 난이도를 AI에 반영
   player.stats = TANKS[selTank];
   // 상대 기종: 0~2은 지정, 3은 무작위
   enemy.stats  = selEnemy === 3
@@ -1954,6 +1989,10 @@ function drawHUD() {
   ctx.fillStyle = muted ? '#6d7a8f' : '#7ec850';
   ctx.fillText(muted ? '🔇 소리꺼짐 (X)' : '🔊 소리켜짐 (X)', W - 14, HUD_Y + 68);
   ctx.textAlign = 'left';
+  // 현재 난이도 (왼쪽 아래 구석)
+  ctx.fillStyle = DIFFICULTY[selDiff].color;
+  ctx.font = '9px "Courier New", monospace';
+  ctx.fillText(DIFFICULTY[selDiff].name, 172, HUD_Y + 20);
 }
 
 function bar(x, y, w, h, ratio, color, border) {
@@ -1972,11 +2011,12 @@ function hpColor(hp) {
 }
 
 // ---------- 메뉴 화면 ----------
-function tankCardRect(i)  { return { x: 60 + i * 240, y: 118, w: 200, h: 116 }; }
-// 상대 탱크는 4칸(3기종 + 무작위)이라 조금 좁게
-function enemyCardRect(i) { return { x: 60 + i * 173, y: 268, w: 155, h: 54 }; }
-function mapCardRect(i)   { return { x: 60 + i * 240, y: 356, w: 200, h: 78 }; }
-function startBtnRect()   { return { x: W / 2 - 120, y: 452, w: 240, h: 42 }; }
+// 왼쪽 열(x 40~510)에 선택 항목, 오른쪽 열(x 530~780)에 조작표를 둡니다
+function tankCardRect(i)  { return { x: 34 + i * 150, y: 108, w: 142, h: 104 }; }
+function enemyCardRect(i) { return { x: 34 + i * 113, y: 246, w: 106, h: 46 }; }
+function diffCardRect(i)  { return { x: 34 + i * 150, y: 326, w: 142, h: 44 }; }
+function mapCardRect(i)   { return { x: 34 + i * 150, y: 404, w: 142, h: 58 }; }
+function startBtnRect()   { return { x: 34, y: 486, w: 418, h: 44 }; }
 
 function drawMenu() {
   // 배경
@@ -1990,16 +2030,16 @@ function drawMenu() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd700';
   ctx.font = 'bold 40px "Courier New", monospace';
-  ctx.fillText('F O R T R E S S', W / 2, 56);
+  ctx.fillText('F O R T R E S S', W / 2, 52);
   ctx.fillStyle = '#6d7a8f';
   ctx.font = '12px "Courier New", monospace';
-  ctx.fillText('탱크와 맵을 고르고 출격하세요', W / 2, 78);
+  ctx.fillText('탱크 · 상대 · 난이도 · 맵을 고르고 출격하세요', W / 2, 74);
 
   // --- 내 탱크 선택 ---
   ctx.textAlign = 'left';
   ctx.fillStyle = menuRow === 0 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 0 ? '▶ 1. 내 탱크' : '  1. 내 탱크', 60, 108);
+  ctx.fillText(menuRow === 0 ? '▶ 1. 내 탱크' : '  1. 내 탱크', 34, 100);
 
   for (let i = 0; i < 3; i++) {
     const r = tankCardRect(i);
@@ -2013,24 +2053,24 @@ function drawMenu() {
     ctx.strokeRect(r.x, r.y, r.w, r.h);
 
     // 미니 탱크 그림
-    drawMiniTank(i, r.x + r.w / 2, r.y + 46, t.color, 1.15);
+    drawMiniTank(i, r.x + r.w / 2, r.y + 40, t.color, 0.95);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = t.color;
-    ctx.font = 'bold 15px "Courier New", monospace';
-    ctx.fillText(t.name, r.x + r.w / 2, r.y + 76);
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText(t.name, r.x + r.w / 2, r.y + 68);
     ctx.fillStyle = '#8fa3b8';
-    ctx.font = '10px "Courier New", monospace';
-    ctx.fillText(t.desc.split(' — ')[1], r.x + r.w / 2, r.y + 92);
+    ctx.font = '9px "Courier New", monospace';
+    ctx.fillText(t.desc.split(' — ')[1], r.x + r.w / 2, r.y + 84);
     ctx.fillStyle = '#c9b46a';
-    ctx.fillText(`한방 ${t.dmg} · 폭발범위 ${t.radius}`, r.x + r.w / 2, r.y + 107);
+    ctx.fillText(`한방 ${t.dmg} · 범위 ${t.radius}`, r.x + r.w / 2, r.y + 98);
     ctx.textAlign = 'left';
   }
 
   // --- 상대 탱크 선택 (무작위 포함 4칸) ---
   ctx.fillStyle = menuRow === 1 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 1 ? '▶ 2. 상대 탱크' : '  2. 상대 탱크', 60, 258);
+  ctx.fillText(menuRow === 1 ? '▶ 2. 상대 탱크' : '  2. 상대 탱크', 34, 238);
 
   for (let i = 0; i < 4; i++) {
     const r = enemyCardRect(i);
@@ -2044,33 +2084,53 @@ function drawMenu() {
     ctx.lineWidth = sel ? 3 : 1;
     ctx.strokeRect(r.x, r.y, r.w, r.h);
 
+    ctx.textAlign = 'center';
     if (isRandom) {
-      ctx.textAlign = 'center';
       ctx.fillStyle = sel ? '#f56b6b' : '#8fa3b8';
-      ctx.font = 'bold 20px "Courier New", monospace';
-      ctx.fillText('?', r.x + 30, r.y + 36);
-      ctx.font = 'bold 13px "Courier New", monospace';
-      ctx.fillText('무작위', r.x + 100, r.y + 27);
-      ctx.fillStyle = '#6d7a8f';
-      ctx.font = '9px "Courier New", monospace';
-      ctx.fillText('붙어봐야 앎', r.x + 100, r.y + 42);
+      ctx.font = 'bold 18px "Courier New", monospace';
+      ctx.fillText('?', r.x + r.w / 2, r.y + 24);
+      ctx.font = 'bold 11px "Courier New", monospace';
+      ctx.fillText('무작위', r.x + r.w / 2, r.y + 38);
     } else {
-      drawMiniTank(i, r.x + 32, r.y + 30, t.color, 0.62);
-      ctx.textAlign = 'center';
+      drawMiniTank(i, r.x + 24, r.y + 24, t.color, 0.48);
       ctx.fillStyle = t.color;
-      ctx.font = 'bold 13px "Courier New", monospace';
-      ctx.fillText(t.name, r.x + 100, r.y + 27);
+      ctx.font = 'bold 12px "Courier New", monospace';
+      ctx.fillText(t.name, r.x + 70, r.y + 22);
       ctx.fillStyle = '#8fa3b8';
-      ctx.font = '9px "Courier New", monospace';
-      ctx.fillText(`한방 ${t.dmg} · 범위 ${t.radius}`, r.x + 100, r.y + 42);
+      ctx.font = '8px "Courier New", monospace';
+      ctx.fillText(`${t.dmg} / ${t.radius}`, r.x + 70, r.y + 35);
     }
     ctx.textAlign = 'left';
   }
 
-  // --- 맵 선택 ---
+  // --- 난이도 선택 ---
   ctx.fillStyle = menuRow === 2 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 2 ? '▶ 3. 맵 선택' : '  3. 맵 선택', 60, 346);
+  ctx.fillText(menuRow === 2 ? '▶ 3. 난이도' : '  3. 난이도', 34, 318);
+
+  for (let i = 0; i < 3; i++) {
+    const r = diffCardRect(i);
+    const d = DIFFICULTY[i];
+    const sel = selDiff === i;
+    ctx.fillStyle = sel ? 'rgba(255,215,0,0.10)' : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = sel ? d.color : '#3a4a63';
+    ctx.lineWidth = sel ? 3 : 1;
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = sel ? d.color : '#a8b8cc';
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillText(d.name, r.x + r.w / 2, r.y + 20);
+    ctx.fillStyle = '#6d7a8f';
+    ctx.font = '9px "Courier New", monospace';
+    ctx.fillText(d.desc, r.x + r.w / 2, r.y + 35);
+    ctx.textAlign = 'left';
+  }
+
+  // --- 맵 선택 ---
+  ctx.fillStyle = menuRow === 3 ? '#ffd700' : '#8fa3b8';
+  ctx.font = 'bold 14px "Courier New", monospace';
+  ctx.fillText(menuRow === 3 ? '▶ 4. 맵 선택' : '  4. 맵 선택', 34, 396);
 
   for (let i = 0; i < 3; i++) {
     const r = mapCardRect(i);
@@ -2100,8 +2160,8 @@ function drawMenu() {
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 14px "Courier New", monospace';
-    ctx.fillText(m.name, r.x + r.w / 2, r.y + r.h - 8);
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.fillText(m.name, r.x + r.w / 2, r.y + r.h - 7);
     ctx.textAlign = 'left';
   }
 
@@ -2116,12 +2176,75 @@ function drawMenu() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd700';
   ctx.font = 'bold 18px "Courier New", monospace';
-  ctx.fillText('출  격 !', W / 2, b.y + 28);
+  ctx.fillText('출  격 !  (Enter)', b.x + b.w / 2, b.y + 29);
 
   ctx.fillStyle = '#556377';
-  ctx.font = '11px "Courier New", monospace';
-  ctx.fillText('↑↓ 줄 이동 · ←→ 선택 · Enter 시작  (마우스 클릭도 됩니다)', W / 2, 516);
+  ctx.font = '10px "Courier New", monospace';
+  ctx.fillText('↑↓ 줄 이동 · ←→ 선택 · 마우스 클릭도 됩니다', b.x + b.w / 2, 548);
   ctx.textAlign = 'left';
+
+  drawControlsPanel();
+}
+
+// 오른쪽 조작표 — 처음 여는 사람이 조작법을 바로 알 수 있게 게임 화면 안에 둡니다
+function drawControlsPanel() {
+  const px = 500, py = 100, pw = 262, ph = 430;
+  ctx.fillStyle = 'rgba(255,255,255,0.035)';
+  ctx.fillRect(px, py, pw, ph);
+  ctx.strokeStyle = '#3a4a63';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 14px "Courier New", monospace';
+  ctx.fillText('조 작 법', px + 16, py + 26);
+  ctx.fillStyle = '#3a4a63';
+  ctx.fillRect(px + 16, py + 34, pw - 32, 1);
+
+  const rows = [
+    ['↑ ↓', '포신 각도'],
+    ['← →', '이동 (연료 소모)'],
+    ['스페이스 꾹', '파워 충전 → 떼면 발사'],
+    ['', ''],
+    ['1', '기본샷'],
+    ['2', '두 발 (넓게)'],
+    ['S', '오브 — 게이지 100 필요'],
+    ['', ''],
+    ['H', '지난 발사 힌트'],
+    ['X', '소리 끄기/켜기'],
+    ['R', '같은 조건 재대결'],
+    ['M', '이 화면으로'],
+  ];
+  let y = py + 58;
+  for (const [key, desc] of rows) {
+    if (!key) { y += 10; continue; }
+    ctx.fillStyle = '#e8c14a';
+    ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.fillText(key, px + 18, y);
+    ctx.fillStyle = '#a8b8cc';
+    ctx.font = '11px "Courier New", monospace';
+    ctx.fillText(desc, px + 108, y);
+    y += 22;
+  }
+
+  // 핵심 규칙 요약
+  ctx.fillStyle = '#3a4a63';
+  ctx.fillRect(px + 16, y - 4, pw - 32, 1);
+  y += 16;
+  ctx.fillStyle = '#7ec850';
+  ctx.font = 'bold 11px "Courier New", monospace';
+  ctx.fillText('알아두면 좋은 것', px + 18, y);
+  y += 18;
+  const tips = [
+    '· 바람이 포탄을 옆으로 밉니다',
+    '· 한 턴 20초, 시간 넘기면 손해',
+    '· 적 발밑을 파면 떨어뜨릴 수 있음',
+    '· 맞힐수록 오브 게이지가 찹니다',
+  ];
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '10px "Courier New", monospace';
+  for (const t of tips) { ctx.fillText(t, px + 18, y); y += 17; }
 }
 
 // 메뉴 카드용 미니 탱크.
