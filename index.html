@@ -45,7 +45,7 @@
   <h1>◆ FORTRESS ◆</h1>
 
   <div id="frame">
-    <canvas id="game" width="800" height="580"></canvas>
+    <canvas id="game" width="1100" height="720"></canvas>
   </div>
 
   <div id="help">
@@ -63,9 +63,10 @@
 // ---------- 캔버스 ----------
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const W = canvas.width;          // 800
-const H = canvas.height;         // 580 (아래 80px은 HUD 패널)
-const GROUND_H = 500;            // 게임이 벌어지는 영역의 세로 크기
+const W = canvas.width;          // 1100
+const H = canvas.height;         // 720 (아래 92px은 HUD 패널)
+const HUD_H = 92;                // HUD 패널 높이
+const GROUND_H = H - HUD_H;      // 게임이 벌어지는 영역의 세로 크기 (628)
 const HUD_Y = GROUND_H;          // HUD 패널이 시작되는 y
 
 // ---------- 게임 설정값 ----------
@@ -261,6 +262,26 @@ const SFX = {
     [659, 880].forEach((f, i) =>
       later(i * 90, () => tone({ freq: f, dur: 0.22, type: 'triangle', vol: 0.14, attack: 0.01 })));
   },
+  // 스웜이 공중에서 갈라질 때
+  split() {
+    tone({ freq: 520, dur: 0.14, type: 'triangle', vol: 0.13, slide: 900, attack: 0.004 });
+    noise({ dur: 0.12, vol: 0.14, filterHz: 2000, sweepTo: 900, curve: 2 });
+  },
+  // 볼링이 땅에 처음 닿아 구르기 시작할 때
+  bounce() {
+    tone({ freq: 190, dur: 0.16, type: 'triangle', vol: 0.17, slide: 95, attack: 0.004 });
+    noise({ dur: 0.1, vol: 0.12, filterHz: 700, sweepTo: 250, curve: 1.6 });
+  },
+  // 보급품이 떨어질 때 — 부드러운 알림음
+  itemDrop() {
+    [700, 880].forEach((f, i) =>
+      later(i * 100, () => tone({ freq: f, dur: 0.2, type: 'triangle', vol: 0.11, attack: 0.012 })));
+  },
+  // 아이템을 주웠을 때 — 상승하는 반짝임
+  itemGet() {
+    [660, 880, 1170].forEach((f, i) =>
+      later(i * 60, () => tone({ freq: f, dur: 0.16, type: 'triangle', vol: 0.13, attack: 0.005 })));
+  },
   click() { tone({ freq: 620, dur: 0.05, type: 'triangle', vol: 0.09, attack: 0.003 }); },
   tick()  { tone({ freq: 720, dur: 0.07, type: 'triangle', vol: 0.11, attack: 0.004 }); },
   // 도-미-솔-도 (부드러운 삼각파로)
@@ -365,15 +386,36 @@ function toggleMute() {
 // 단순히 색만 다른 게 아니라 "한 방"과 "맞추기 쉬움"을 교환합니다.
 // dmg × 필요타수가 비슷하도록 맞춰 어느 걸 골라도 손해가 없게 했습니다.
 const TANKS = [
+  // proj: 포탄이 날아가고 터지는 '방식'. 기종을 진짜로 다르게 만드는 핵심입니다.
+  //   normal  — 평범한 포탄
+  //   arrow   — 화살처럼 날아가는 방향으로 뾰족하게. 빠르고 바람에 덜 밀림
+  //   roller  — 땅에 닿으면 굴러가다 터짐 (경사면 아래 적에게 강함)
+  //   cluster — 공중에서 갈라져 여러 발이 쏟아짐
+  //   drill   — 땅을 깊게 파고 들어가 터짐 (지형 파괴 특화)
   { name: '레이븐',  desc: '균형형 — 무난하고 정직한 주력기',
-    color: '#4ec9f5', dmg: 58, radius: 35,
+    color: '#4ec9f5', dmg: 58, radius: 35, proj: 'normal',
     trail: '#ffe680', expl: ['#ff9d2e', '#ffe15c'], shell: 3, shake: 9 },
   { name: '매머드',  desc: '한방형 — 좁지만 정통이면 강력',
-    color: '#f5a623', dmg: 78, radius: 26,
+    color: '#f5a623', dmg: 78, radius: 26, proj: 'normal',
     trail: '#ff8a5c', expl: ['#ff5c2e', '#ffd15c'], shell: 5, shake: 14 },
   { name: '스톰',    desc: '광역형 — 넓게 맞지만 가볍게',
-    color: '#a98df5', dmg: 42, radius: 50,
+    color: '#a98df5', dmg: 42, radius: 50, proj: 'normal',
     trail: '#c9a6ff', expl: ['#7b5cff', '#d9e6ff'], shell: 3, shake: 7 },
+  { name: '랜스',    desc: '관통형 — 빠르고 바람에 강한 화살탄',
+    color: '#5ce0b0', dmg: 52, radius: 28, proj: 'arrow',
+    trail: '#aef5dc', expl: ['#2ec98f', '#c9ffe8'], shell: 3, shake: 8,
+    speedMul: 1.22, windMul: 0.45 },
+  { name: '볼링',    desc: '굴림형 — 떨어진 뒤 굴러가서 터짐',
+    color: '#f56b9e', dmg: 50, radius: 38, proj: 'roller',
+    trail: '#ffc2da', expl: ['#f5426e', '#ffd0e0'], shell: 4, shake: 10 },
+  { name: '스웜',    desc: '분열형 — 공중에서 갈라져 쏟아짐',
+    color: '#ffd34e', dmg: 26, radius: 24, proj: 'cluster',
+    trail: '#fff0a8', expl: ['#ffb02e', '#fff3c9'], shell: 2, shake: 6,
+    clusterN: 4, clusterAt: 0.62 },
+  { name: '드릴',    desc: '굴착형 — 땅을 깊이 파고 터짐',
+    color: '#b0b8c4', dmg: 46, radius: 42, proj: 'drill',
+    trail: '#dfe6ee', expl: ['#8a94a3', '#e6edf5'], shell: 4, shake: 12,
+    digBonus: 1.6 },
 ];
 
 // ---------- AI 난이도 ----------
@@ -385,9 +427,9 @@ const TANKS = [
 // 예전 값(320/0.65/32)을 보통으로 두면 승률이 77%로 너무 쉬웠습니다.
 // 먼저 쏘는 쪽이 유리해서, 같은 실력이어도 플레이어가 이깁니다.
 const DIFFICULTY = [
-  { name: '쉬움',   desc: '천천히 배우기 좋음',     firstError: 460, decay: 0.82, minError: 78, color: '#7ec850' },
-  { name: '보통',   desc: '사람처럼 점점 정확해짐', firstError: 280, decay: 0.58, minError: 24, color: '#e8c14a' },
-  { name: '어려움', desc: '몇 발이면 정확히 맞춤',   firstError: 190, decay: 0.48, minError: 12, color: '#f56b6b' },
+  { name: '쉬움',   desc: '연습하기 좋음',         firstError: 640, decay: 0.92, minError: 155, color: '#7ec850' },
+  { name: '보통',   desc: '사람처럼 점점 정확해짐', firstError: 520, decay: 0.86, minError: 95,  color: '#e8c14a' },
+  { name: '어려움', desc: '실수하면 바로 응징',     firstError: 300, decay: 0.62, minError: 30,  color: '#f56b6b' },
 ];
 let selDiff = Number(localStorage.getItem('fortress_diff') ?? 1);
 if (!(selDiff >= 0 && selDiff <= 2)) selDiff = 1;
@@ -405,15 +447,26 @@ function applyDifficulty() {
 // sky: 하늘 그라데이션 / dirt: 흙색 / top: 지표면 색 / deco: 배경 장식 종류
 // t: 지형 굴곡 (f=파장, a=높낮이) — 맵마다 언덕 모양이 다릅니다
 const MAPS = [
+  { name: '공원',      sky: ['#4fc3f0', '#a8e4ff'], dirt: '#6b3f28', top: '#5cc04a',
+    deco: 'park',   streak: 'rgba(255,255,255,0.35)',
+    scenery: { tree: '#3f9c3a', tree2: '#57c04f', trunk: '#7a5230', bush: '#4aa843', bench: '#c89b62' },
+    t: { f1: 0.005, a1: 42, f2: 0.015, a2: 15, f3: 0.038, a3: 6 } },
   { name: '초원',      sky: ['#5db8f0', '#b8e8ff'], dirt: '#7a4f2c', top: '#4fb84a',
     deco: 'clouds', streak: 'rgba(255,255,255,0.35)',
+    scenery: { tree: '#3d8f38', tree2: '#54ad4a', trunk: '#6d4a2c', bush: '#46a03f', bench: null },
     t: { f1: 0.006, a1: 45, f2: 0.017, a2: 16, f3: 0.041, a3: 6 } },
   { name: '사막의 밤', sky: ['#0b0e2a', '#3a2e5c'], dirt: '#6e5638', top: '#d8b878',
     deco: 'stars',  streak: 'rgba(255,220,160,0.3)',
+    scenery: { cactus: '#3f7a4a', rock: '#5c4a38' },
     t: { f1: 0.004, a1: 70, f2: 0.013, a2: 25, f3: 0.030, a3: 5 } },
   { name: '설원',      sky: ['#8fb8d8', '#e8f4fc'], dirt: '#5e7189', top: '#f0f8ff',
     deco: 'snow',   streak: 'rgba(255,255,255,0.5)',
+    scenery: { pine: '#2f6b4a', pine2: '#3d8259', trunk: '#4a3a2c' },
     t: { f1: 0.007, a1: 55, f2: 0.021, a2: 26, f3: 0.050, a3: 12 } },
+  { name: '노을',      sky: ['#ff9a5c', '#ffd9a0'], dirt: '#6b4530', top: '#c9834a',
+    deco: 'sunset', streak: 'rgba(255,220,180,0.4)',
+    scenery: { tree: '#8a5a3a', tree2: '#a87048', trunk: '#5c3a26', bush: '#8f6040', bench: null },
+    t: { f1: 0.005, a1: 60, f2: 0.016, a2: 20, f3: 0.035, a3: 7 } },
 ];
 
 // ---------- 진행 상태 ----------
@@ -435,7 +488,7 @@ let lastTickSecond = -1;   // 경고음을 1초에 한 번만 내기 위한 기�
 // 메뉴 선택 상태
 let menuRow = 0;       // 0=내 탱크, 1=상대 탱크, 2=맵
 let selTank = 0;
-let selEnemy = 3;      // 0~2=기종 지정, 3=무작위
+let selEnemy = 7;      // 0~6=기종 지정, 7=무작위
 let selMap = 0;
 let map = MAPS[0];
 
@@ -457,7 +510,7 @@ let shake = 0;
 let terrain = new Array(W);
 
 function generateTerrain() {
-  const base = GROUND_H * 0.7;
+  const base = GROUND_H * 0.68;
   const s1 = Math.random() * 1000, s2 = Math.random() * 1000, s3 = Math.random() * 1000;
   const t = map.t;
   for (let x = 0; x < W; x++) {
@@ -465,13 +518,13 @@ function generateTerrain() {
     h += Math.sin((x + s1) * t.f1) * t.a1;
     h += Math.sin((x + s2) * t.f2) * t.a2;
     h += Math.sin((x + s3) * t.f3) * t.a3;
-    terrain[x] = Math.max(130, Math.min(GROUND_H - 26, Math.round(h)));
+    terrain[x] = Math.max(160, Math.min(GROUND_H - 30, Math.round(h)));
   }
 }
 
 // ---------- 대포 ----------
 const player = {
-  x: 110, y: 0, angle: 45, hp: CONFIG.maxHp,
+  x: 150, y: 0, angle: 45, hp: CONFIG.maxHp,
   fuel: CONFIG.fuelMax,
   gauge: 0,             // 오브 게이지 (100이면 필살기 사용 가능)
   stats: TANKS[0],
@@ -482,16 +535,20 @@ const player = {
   wheelSpin: 0,         // 바퀴 회전량 (이동하면 굴러갑니다)
   bob: 0,               // 이동 중 덜컹거림
   drawAngle: 45,        // 화면에 보이는 포신 각도 (실제 각도를 부드럽게 따라감)
+  buffDouble: false,    // 아이템: 이번 턴 2연발
+  buffPower: false,     // 아이템: 이번 턴 위력 강화
+  buffShield: false,    // 아이템: 다음 피해 절반
   fallFrom: null,       // 떨어지기 시작한 높이 (안 떨어지는 중이면 null)
   fallDealt: 0,         // 이번 턴에 이미 받은 낙하 데미지 (한 턴에 누적되지 않게)
 };
 const enemy = {
-  x: 690, y: 0, angle: 135, hp: CONFIG.maxHp,
+  x: 950, y: 0, angle: 135, hp: CONFIG.maxHp,
   fuel: CONFIG.fuelMax,
   gauge: 0,
   stats: TANKS[1],
   name: '적',
   tilt: 0, recoil: 0, wheelSpin: 0, bob: 0, drawAngle: 135,
+  buffDouble: false, buffPower: false, buffShield: false,
   fallFrom: null, fallDealt: 0,
   moveTarget: null,     // AI가 이번 턴에 이동할 목적지 (없으면 안 움직임)
   lastPower: null, lastAngle: null,
@@ -604,6 +661,135 @@ const SHOTS = {
             dmgCap: 82 },
 };
 
+// ---------- 포탄 속도 곡선 (영상 편집의 '속도 그래프'와 같은 개념) ----------
+// 포탄이 처음부터 끝까지 같은 속도로 날면 밋밋합니다. 그래서 '보여주는 속도'를
+// 구간마다 다르게 합니다:
+//   발사 직후  — 원래 속도 (탄이 튀어나가는 맛)
+//   정점 부근  — 0.55배 느리게 (궤적을 눈으로 읽을 시간)
+//   착탄 직전  — 0.42배 느리게 (긴장감)
+//
+// 핵심 규칙: 배율은 절대 1을 넘지 않습니다. 1을 넘으면 물리 스텝이 '추가로'
+// 실행되어 착탄 지점이 달라지고 AI 조준과 어긋납니다(실제로 247px 빗나갔습니다).
+// 느리게만 만들면 총 스텝 수는 그대로고 한 스텝을 여러 프레임에 나눠 보여줄 뿐이라
+// 궤적이 완전히 보존됩니다.
+let bulletClock = 0;        // 물리 스텝을 소수로 누적했다가 정수 번만큼 실행
+
+function bulletTimeScale() {
+  if (bullets.length === 0) return 1;
+  const b = bullets[0];
+
+  // 1) 발사 직후 — 원래 속도로 시원하게 나갑니다 (느리게 만들지 않음)
+  let scale = 1;
+
+  // 2) 정점 부근 — 위로 솟다가 떨어지기 시작하는 구간에서 느리게
+  //    vy가 0 근처일수록(=정점) 많이 느려집니다
+  const apex = Math.max(0, 1 - Math.abs(b.vy) / 2.2);
+  scale *= 1 - apex * 0.45;
+
+  // 3) 착탄 직전 — 땅이나 상대가 가까우면 느리게
+  const gx = Math.round(b.x);
+  const ground = (gx >= 0 && gx < W) ? terrain[gx] : GROUND_H;
+  const toGround = ground - b.y;
+  const foe = b.who === 'player' ? enemy : player;
+  const toFoe = Math.hypot(b.x - foe.x, b.y - (foe.y - 10));
+  const near = Math.min(toGround < 0 ? 999 : toGround, toFoe);
+  if (near < 90 && b.vy > 0) {
+    scale *= 0.42 + (near / 90) * 0.58;
+  }
+
+  // 구르는 중에는 원래 속도로 (느리면 답답합니다)
+  if (b.rolling) scale = 1;
+
+  // 1을 넘지 않게 잘라냅니다 — 위 주석의 이유로 매우 중요합니다
+  return Math.max(0.3, Math.min(1, scale));
+}
+
+// ---------- 아이템 (하늘에서 낙하산으로 떨어집니다) ----------
+// 원조 포트리스처럼 판 도중 보급이 내려옵니다. 먼저 줍는 쪽이 이득이라
+// "위험을 무릅쓰고 주우러 갈 것인가"라는 선택이 생깁니다.
+const ITEMS = [
+  { id: 'heal',   name: '수리',     desc: '체력 +30',        color: '#5ce07a', icon: '+' },
+  { id: 'double', name: '더블',     desc: '이번 턴 2연발',    color: '#ffd34e', icon: '2' },
+  { id: 'power',  name: '강화탄',   desc: '이번 턴 위력 1.6배', color: '#ff7a5c', icon: '!' },
+  { id: 'fuel',   name: '연료',     desc: '연료 가득 +50',    color: '#e8c14a', icon: 'F' },
+  { id: 'gauge',  name: '에너지',   desc: '오브 게이지 +45',   color: '#a98df5', icon: 'O' },
+  { id: 'shield', name: '방어막',   desc: '다음 피해 절반',    color: '#5cc8f5', icon: 'S' },
+];
+
+let items = [];              // 지금 떨어지는 중이거나 땅에 놓인 아이템들
+let turnsSinceItem = 0;      // 마지막 아이템 이후 지난 턴 수
+
+function spawnItem() {
+  const def = ITEMS[Math.floor(Math.random() * ITEMS.length)];
+  items.push({
+    def,
+    x: 90 + Math.random() * (W - 180),
+    y: -30,
+    vy: 0.55 + Math.random() * 0.3,
+    landed: false,
+    sway: Math.random() * Math.PI * 2,   // 낙하산이 좌우로 흔들립니다
+    life: 1,
+  });
+  showMessage(`보급품 투하! (${def.name})`, 70);
+  SFX.itemDrop();
+}
+
+// 아이템이 떨어지고, 대포가 닿으면 줍습니다
+function updateItems() {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (!it.landed) {
+      it.y += it.vy;
+      it.sway += 0.04;
+      it.x += Math.sin(it.sway) * 0.35 + wind * 22;   // 바람에 흘러갑니다
+      it.x = Math.max(20, Math.min(W - 20, it.x));
+      const gx = Math.round(it.x);
+      const ground = (gx >= 0 && gx < W) ? terrain[gx] : GROUND_H;
+      if (it.y >= ground - 10) { it.y = ground - 10; it.landed = true; }
+    } else {
+      // 땅이 파이면 같이 내려앉습니다
+      const gx = Math.round(it.x);
+      const ground = (gx >= 0 && gx < W) ? terrain[gx] : GROUND_H;
+      if (it.y < ground - 10) it.y = Math.min(ground - 10, it.y + 2.2);
+    }
+
+    // 대포가 가까이 가면 획득
+    for (const t of [player, enemy]) {
+      if (t.hp <= 0) continue;
+      if (Math.abs(t.x - it.x) < 26 && Math.abs(t.y - it.y) < 34) {
+        pickupItem(t, it.def);
+        items.splice(i, 1);
+        break;
+      }
+    }
+  }
+}
+
+function pickupItem(tank, def) {
+  const mine = tank === player;
+  if (def.id === 'heal')   tank.hp = Math.min(CONFIG.maxHp, tank.hp + 30);
+  if (def.id === 'fuel')   tank.fuel = Math.min(CONFIG.fuelMax + 50, tank.fuel + 50);
+  if (def.id === 'gauge')  addGauge(tank, 45);
+  if (def.id === 'double') tank.buffDouble = true;
+  if (def.id === 'power')  tank.buffPower = true;
+  if (def.id === 'shield') tank.buffShield = true;
+
+  damageTexts.push({ x: tank.x, y: tank.y - 34, value: 0, life: 1,
+                     pickup: def.name, color: def.color });
+  SFX.itemGet();
+  showMessage(`${mine ? '내' : '적'}가 ${def.name} 획득! · ${def.desc}`, 80);
+  // 획득 반짝임
+  for (let i = 0; i < 16; i++) {
+    const a = Math.random() * Math.PI * 2;
+    sparks.push({
+      x: tank.x, y: tank.y - 14,
+      vx: Math.cos(a) * (1 + Math.random() * 2.5),
+      vy: Math.sin(a) * (1 + Math.random() * 2.5) - 1,
+      life: 1, size: 3, decay: 0.03, gravity: 0.08, color: def.color,
+    });
+  }
+}
+
 // ---------- 포탄 ----------
 // 더블샷 때문에 포탄이 동시에 여러 개 날아갈 수 있어 배열로 관리합니다.
 let bullets = [];
@@ -615,19 +801,25 @@ function stepProjectile(b) {
   b.x += b.vx;
   b.y += b.vy;
   b.vy += CONFIG.gravity;
-  b.vx += wind;              // 바람이 옆으로 밀어냄
+  // windMul: 화살탄(랜스)은 바람을 덜 받습니다
+  b.vx += wind * (b.windMul ?? 1);
 }
 
 function fire(shooter, angle, powerVal, who, shotType = 'single') {
   const shot = SHOTS[shotType];
   const stats = who === 'player' ? player.stats : enemy.stats;
-  const speed = powerVal * CONFIG.powerScale;
+  // 기종마다 포탄 속도가 다릅니다 (랜스는 빠름)
+  const speed = powerVal * CONFIG.powerScale * (stats.speedMul ?? 1);
 
   bullets = [];
-  // count가 2면 각도를 ±spread만큼 벌려 두 발을 쏩니다
-  for (let i = 0; i < shot.count; i++) {
-    const offset = shot.count === 1 ? 0
-                 : (i - (shot.count - 1) / 2) * shot.spread * 2;
+  // 더블 아이템을 먹었으면 발사 수가 2배가 됩니다
+  const shooterT = who === 'player' ? player : enemy;
+  const count = shot.count * (shooterT.buffDouble ? 2 : 1);
+  const spread = shooterT.buffDouble && shot.count === 1 ? 1.6 : shot.spread;
+  // count가 2 이상이면 각도를 ±spread만큼 벌려 여러 발을 쏩니다
+  for (let i = 0; i < count; i++) {
+    const offset = count === 1 ? 0
+                 : (i - (count - 1) / 2) * spread * 2;
     const rad = (angle + offset) * Math.PI / 180;
     bullets.push({
       x: shooter.x + Math.cos(rad) * 22,
@@ -635,6 +827,8 @@ function fire(shooter, angle, powerVal, who, shotType = 'single') {
       vx: Math.cos(rad) * speed,
       vy: -Math.sin(rad) * speed,
       trail: [], who, shotType,
+      proj: stats.proj || 'normal',
+      windMul: stats.windMul ?? 1,
       color: shotType === 'orb' ? '#ffe680' : stats.trail,
       // 포탄을 훨씬 크게 (예전엔 3~5px 네모라 밋밋했습니다)
       size: (shotType === 'orb' ? stats.shell + 5 : stats.shell + 2.5),
@@ -697,6 +891,9 @@ function fire(shooter, angle, powerVal, who, shotType = 'single') {
   } else if (shotType === 'orb') {
     enemy.gauge = 0;
   }
+  // 이번 턴짜리 아이템 효과는 쏘고 나면 사라집니다 (방어막은 맞을 때까지 유지)
+  shooterT.buffDouble = false;
+  shooterT.buffPower = false;
   phase = 'flying';
 }
 
@@ -710,13 +907,15 @@ let shockwaves = [];    // 폭발 충격파 고리 (스톰·오브)
 let smoke = [];         // 포탄이 지나간 자리에 남는 연기
 let screenFlash = 0;    // 오브 착탄 시 화면 전체가 번쩍이는 정도
 
-function createExplosion(x, y, who, shotType = 'single') {
+function createExplosion(x, y, who, shotType = 'single', proj = 'normal') {
   const base = who === 'player' ? player.stats : enemy.stats;
   const shot = SHOTS[shotType];
   // 발사 종류에 따라 위력과 폭발 크기가 달라집니다 (2번은 약하게, 오브는 강하게)
+  const shooterTank = who === 'player' ? player : enemy;
+  const powerBuff = shooterTank.buffPower ? 1.6 : 1;
   const stats = {
     ...base,
-    dmg: base.dmg * shot.dmgMul,
+    dmg: base.dmg * shot.dmgMul * powerBuff,
     radius: base.radius * shot.radiusMul,
     dmgCap: shot.dmgCap,
     expl: shotType === 'orb' ? ['#ffd34e', '#fff6c9'] : base.expl,
@@ -794,8 +993,9 @@ function createExplosion(x, y, who, shotType = 'single') {
   applyDamage(player, x, y, stats, player === shooter);
   applyDamage(enemy,  x, y, stats, enemy  === shooter);
 
-  // 땅 파기
-  const r = stats.radius;
+  // 땅 파기 — 드릴은 더 깊이 파고 들어갑니다
+  const digMul = proj === 'drill' ? (base.digBonus ?? 1.6) : 1;
+  const r = stats.radius * digMul;
   for (let i = Math.round(x - r); i <= Math.round(x + r); i++) {
     if (i < 0 || i >= W) continue;
     const dx = i - x;
@@ -826,6 +1026,13 @@ function applyDamage(tank, ex, ey, stats, isSelf = false) {
   let dmg = Math.round(stats.dmg * (1 - ratio) * (1 - ratio * 0.5));
   if (stats.dmgCap) dmg = Math.min(dmg, stats.dmgCap);   // 오브 한 방 즉사 방지
   if (isSelf) dmg = Math.round(dmg * CONFIG.selfDamage);
+  // 방어막(아이템): 다음 피해를 절반으로 줄이고 소모됩니다
+  if (tank.buffShield && dmg > 0) {
+    dmg = Math.round(dmg * 0.5);
+    tank.buffShield = false;
+    damageTexts.push({ x: tank.x, y: tank.y - 50, value: 0, life: 1,
+                       pickup: '방어막!', color: '#5cc8f5' });
+  }
   if (dmg > 0) {
     tank.hp = Math.max(0, tank.hp - dmg);
     damageTexts.push({ x: tank.x, y: tank.y - 30, value: dmg, life: 1, self: isSelf });
@@ -851,12 +1058,121 @@ let clouds = [];
 let stars = [];
 let snowflakes = [];
 
+// 지형 위에 놓이는 풍경 장식 (나무·수풀·벤치·선인장 등)
+// 레퍼런스 이미지의 도트 문법을 참고했습니다: 계단식 덩어리, 굵은 픽셀, 단순한 색 2~3개.
+let scenery = [];
+
+// 도트 느낌을 내는 핵심 도구 — 모든 그림을 PX 격자에 맞춰 그립니다.
+const PX = 5;
+function pxRect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(Math.round(x / PX) * PX, Math.round(y / PX) * PX,
+               Math.round(w / PX) * PX, Math.round(h / PX) * PX);
+}
+
+// 계단식 나무 우듬지 — 가로로 긴 덩어리를 층층이 쌓아 둥글게 보이게 합니다
+function pxBlob(cx, cy, r, color) {
+  const rows = Math.round(r / PX);
+  for (let i = -rows; i <= rows; i++) {
+    const t = Math.abs(i) / rows;
+    const halfW = Math.round(Math.sqrt(Math.max(0, 1 - t * t)) * r / PX) * PX;
+    if (halfW <= 0) continue;
+    pxRect(cx - halfW, cy + i * PX, halfW * 2, PX, color);
+  }
+}
+
+function initScenery() {
+  scenery = [];
+  const sc = map.scenery || {};
+  const place = (kind, count, minS, maxS) => {
+    for (let i = 0; i < count; i++) {
+      scenery.push({
+        kind,
+        x: 40 + Math.random() * (W - 80),
+        s: minS + Math.random() * (maxS - minS),
+        flip: Math.random() < 0.5,
+      });
+    }
+  };
+  if (map.deco === 'park') {
+    place('tree', 4, 0.85, 1.35);
+    place('bush', 7, 0.7, 1.2);
+    place('bench', 2, 0.9, 1.1);
+  } else if (map.deco === 'clouds') {
+    place('tree', 3, 0.7, 1.1);
+    place('bush', 8, 0.6, 1.1);
+  } else if (map.deco === 'stars') {
+    place('cactus', 5, 0.8, 1.3);
+    place('rock', 6, 0.6, 1.2);
+  } else if (map.deco === 'snow') {
+    place('pine', 6, 0.8, 1.35);
+  } else if (map.deco === 'sunset') {
+    place('tree', 4, 0.8, 1.25);
+    place('bush', 5, 0.6, 1.0);
+  }
+  // 왼쪽부터 그려야 앞뒤가 자연스럽습니다
+  scenery.sort((a, b) => a.s - b.s);
+}
+
+// 풍경 하나를 그립니다. 지형을 파면 그 자리 장식은 사라집니다.
+function drawSceneryItem(o) {
+  const gx = Math.round(o.x);
+  if (gx < 0 || gx >= W) return;
+  const gy = terrain[gx];
+  const sc = map.scenery || {};
+  const s = o.s;
+
+  if (o.kind === 'tree') {
+    const th = 46 * s, tw = 9 * s;
+    pxRect(o.x - tw / 2, gy - th, tw, th, sc.trunk || '#6d4a2c');
+    pxBlob(o.x, gy - th - 16 * s, 26 * s, sc.tree || '#3d8f38');
+    pxBlob(o.x - 9 * s, gy - th - 8 * s, 16 * s, sc.tree2 || '#54ad4a');
+    pxBlob(o.x + 10 * s, gy - th - 20 * s, 14 * s, sc.tree2 || '#54ad4a');
+  } else if (o.kind === 'bush') {
+    pxBlob(o.x, gy - 8 * s, 15 * s, sc.bush || '#46a03f');
+    pxBlob(o.x - 10 * s, gy - 5 * s, 10 * s, sc.bush || '#46a03f');
+    pxBlob(o.x + 10 * s, gy - 6 * s, 11 * s, sc.tree2 || '#54ad4a');
+  } else if (o.kind === 'bench') {
+    const w = 54 * s, h = 22 * s;
+    const c = sc.bench || '#c89b62';
+    pxRect(o.x - w / 2, gy - h, w, 5 * s, c);              // 등받이
+    pxRect(o.x - w / 2, gy - h + 9 * s, w, 5 * s, c);      // 좌판
+    pxRect(o.x - w / 2 + 3 * s, gy - h, 4 * s, h, '#5c3a26');
+    pxRect(o.x + w / 2 - 7 * s, gy - h, 4 * s, h, '#5c3a26');
+  } else if (o.kind === 'cactus') {
+    const c = sc.cactus || '#3f7a4a';
+    const th = 40 * s;
+    pxRect(o.x - 5 * s, gy - th, 10 * s, th, c);
+    pxRect(o.x - 16 * s, gy - th * 0.7, 11 * s, 5 * s, c);
+    pxRect(o.x - 16 * s, gy - th * 0.7, 5 * s, 16 * s, c);
+    pxRect(o.x + 6 * s, gy - th * 0.55, 11 * s, 5 * s, c);
+    pxRect(o.x + 12 * s, gy - th * 0.55, 5 * s, 13 * s, c);
+  } else if (o.kind === 'rock') {
+    pxBlob(o.x, gy - 5 * s, 11 * s, sc.rock || '#5c4a38');
+  } else if (o.kind === 'pine') {
+    const th = 14 * s;
+    pxRect(o.x - 4 * s, gy - th, 8 * s, th, sc.trunk || '#4a3a2c');
+    // 삼각형을 층층이 (전나무)
+    for (let k = 0; k < 3; k++) {
+      const w = (30 - k * 8) * s;
+      const yy = gy - th - k * 15 * s;
+      for (let r = 0; r < 4; r++) {
+        const ww = w * (1 - r / 5);
+        pxRect(o.x - ww / 2, yy - r * PX - 14 * s + r * PX, ww, PX,
+               k % 2 ? (sc.pine2 || '#3d8259') : (sc.pine || '#2f6b4a'));
+      }
+    }
+  }
+}
+
 function initDeco() {
   clouds = []; stars = []; snowflakes = [];
-  if (map.deco === 'clouds') {
-    for (let i = 0; i < 5; i++) {
-      clouds.push({ x: Math.random() * W, y: 40 + Math.random() * 150,
-                    s: 0.7 + Math.random() * 0.9 });
+  initScenery();
+  if (map.deco === 'clouds' || map.deco === 'park' || map.deco === 'sunset') {
+    const n = map.deco === 'park' ? 7 : 5;
+    for (let i = 0; i < n; i++) {
+      clouds.push({ x: Math.random() * W, y: 50 + Math.random() * 190,
+                    s: 0.8 + Math.random() * 1.1 });
     }
   } else if (map.deco === 'stars') {
     for (let i = 0; i < 70; i++) {
@@ -887,7 +1203,7 @@ window.addEventListener('keydown', (e) => {
   // --- 메뉴 화면 조작 ---
   if (phase === 'menu') {
     // 줄마다 칸 수가 다릅니다: 내 탱크 3 / 상대 4(무작위 포함) / 난이도 3 / 맵 3
-    const counts = [3, 4, 3, 3];
+    const counts = [TANKS.length, TANKS.length + 1, DIFFICULTY.length, MAPS.length];
     const move = (dir) => {
       const n = counts[menuRow];
       if (menuRow === 0)      selTank  = (selTank  + dir + n) % n;
@@ -959,14 +1275,14 @@ canvas.addEventListener('click', (e) => {
   if (phase !== 'menu') return;
   const mx = e.offsetX, my = e.offsetY;
   const inside = (r) => mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
-  for (let i = 0; i < 4; i++) {
-    if (i < 3) {
-      if (inside(tankCardRect(i))) { selTank = i; menuRow = 0; SFX.click(); return; }
-      if (inside(diffCardRect(i))) { selDiff = i; menuRow = 2; applyDifficulty(); SFX.click(); return; }
-      if (inside(mapCardRect(i)))  { selMap  = i; menuRow = 3; SFX.click(); return; }
-    }
-    if (inside(enemyCardRect(i)))  { selEnemy = i; menuRow = 1; SFX.click(); return; }
-  }
+  for (let i = 0; i < TANKS.length; i++)
+    if (inside(tankCardRect(i))) { selTank = i; menuRow = 0; SFX.click(); return; }
+  for (let i = 0; i < TANKS.length + 1; i++)
+    if (inside(enemyCardRect(i))) { selEnemy = i; menuRow = 1; SFX.click(); return; }
+  for (let i = 0; i < DIFFICULTY.length; i++)
+    if (inside(diffCardRect(i))) { selDiff = i; menuRow = 2; applyDifficulty(); SFX.click(); return; }
+  for (let i = 0; i < MAPS.length; i++)
+    if (inside(mapCardRect(i))) { selMap = i; menuRow = 3; SFX.click(); return; }
   const b = startBtnRect();
   if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) startGame();
 });
@@ -976,18 +1292,23 @@ canvas.addEventListener('click', (e) => {
 // 교과서 공식은 프레임 단위 계산과 어긋나 실제로 165px나 빗나갔기 때문입니다.
 function simulateLanding(from, angleDeg, powerVal) {
   const rad = angleDeg * Math.PI / 180;
-  const speed = powerVal * CONFIG.powerScale;
-  // 실제 발사와 똑같은 시작 위치·속도로 가짜 포탄을 하나 만듭니다
+  // 기종별 속도·바람 계수를 실제 발사와 똑같이 반영합니다.
+  // (이게 빠져 있으면 랜스처럼 speedMul이 있는 기종에서 AI가 크게 빗나갑니다)
+  const st = from.stats || {};
+  const speed = powerVal * CONFIG.powerScale * (st.speedMul ?? 1);
   const b = {
     x: from.x + Math.cos(rad) * 22,
     y: from.y - 14 - Math.sin(rad) * 22,
     vx: Math.cos(rad) * speed,
     vy: -Math.sin(rad) * speed,
+    windMul: st.windMul ?? 1,
   };
+  // 쏘는 쪽이 아닌 상대를 표적으로 봅니다
+  const foe = from === player ? enemy : player;
 
   for (let i = 0; i < 3000; i++) {
     stepProjectile(b);          // 실제 포탄과 완전히 같은 물리
-    const dx = b.x - player.x, dy = b.y - (player.y - 10);
+    const dx = b.x - foe.x, dy = b.y - (foe.y - 10);
     if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) return b.x;
     if (b.x < -50 || b.x > W + 50 || b.y > GROUND_H + 140) return b.x;
     if (b.y >= 0) {
@@ -1019,7 +1340,11 @@ function aiDecideShot() {
   errorSize = Math.max(CONFIG.aiMinError, errorSize);
 
   const jitter = (Math.random() * 2 - 1) * errorSize;
-  const targetX = player.x + jitter;
+  // 스웜(분열탄)은 공중에서 갈라져 예측 지점보다 앞쪽에 떨어집니다.
+  // 시뮬레이션이 이걸 모르므로(평균 73px 어긋남) 조준점을 그만큼 당겨줍니다.
+  const clusterBias = enemy.stats.proj === 'cluster' ? 62 : 0;
+  const dir = Math.sign(player.x - enemy.x);   // 적은 보통 왼쪽으로 쏩니다
+  const targetX = player.x + jitter - dir * clusterBias;
 
   let best = null;
   for (let a = 100; a <= 170; a += 3) {
@@ -1061,6 +1386,13 @@ function nextTurn() {
 
   player.fallDealt = 0; enemy.fallDealt = 0;   // 낙하 데미지 누적치 초기화
   rollWind();   // 턴마다 바람이 새로 붑니다
+
+  // 보급품 투하 — 3턴에 한 번씩, 화면에 2개까지만
+  turnsSinceItem++;
+  if (turnsSinceItem >= 3 && items.length < 2 && Math.random() < 0.7) {
+    turnsSinceItem = 0;
+    spawnItem();
+  }
 
   if (turn === 'player') {
     turn = 'enemy';
@@ -1110,7 +1442,7 @@ function startGame() {
   applyDifficulty();          // 고른 난이도를 AI에 반영
   player.stats = TANKS[selTank];
   // 상대 기종: 0~2은 지정, 3은 무작위
-  enemy.stats  = selEnemy === 3
+  enemy.stats  = selEnemy >= TANKS.length
     ? TANKS[Math.floor(Math.random() * TANKS.length)]
     : TANKS[selEnemy];
   map = MAPS[selMap];
@@ -1121,19 +1453,23 @@ function newGame() {
   generateTerrain();
   initDeco();
 
-  player.hp = CONFIG.maxHp; player.x = 110; player.angle = 45;
+  player.hp = CONFIG.maxHp; player.x = 150; player.angle = 45;
   player.fuel = CONFIG.fuelMax; player.gauge = 0;
-  enemy.hp = CONFIG.maxHp; enemy.x = 690; enemy.angle = 135;
+  enemy.hp = CONFIG.maxHp; enemy.x = 950; enemy.angle = 135;
   enemy.fuel = CONFIG.fuelMax; enemy.gauge = 0;
   selShot = 'single';
   enemy.lastPower = null; enemy.lastAngle = null;
   enemy.shotCount = 0; enemy.moveTarget = null;
   placeTanks();
 
-  bullets = [];
+  bullets = []; bulletClock = 0;
   explosions = []; sparks = []; flashes = []; damageTexts = []; confetti = [];
   shockwaves = []; smoke = []; screenFlash = 0;
   waitingTurn = false;
+  items = []; turnsSinceItem = 0;
+  for (const t of [player, enemy]) {
+    t.buffDouble = false; t.buffPower = false; t.buffShield = false;
+  }
   player.fallFrom = null; enemy.fallFrom = null;
   player.fallDealt = 0; enemy.fallDealt = 0;
   charging = false; power = 0;
@@ -1159,6 +1495,7 @@ function update() {
   updateAmbient();
   updateTankMotion();
   updateFalling();
+  updateItems();
 
   // 포탄이 끝났고 대포도 다 내려앉았으면 이제 턴을 넘깁니다
   if (waitingTurn && player.fallFrom == null && enemy.fallFrom == null) {
@@ -1227,9 +1564,30 @@ function update() {
     }
   }
 
-  // --- 포탄 (더블샷이면 동시에 두 발이 날아갑니다) ---
+  // --- 포탄 ---
+  // 속도 곡선(bulletTimeScale)만큼 물리를 여러 번 돌리거나 건너뜁니다.
+  // 예: 1.7배면 이번 프레임에 물리를 1~2번, 0.42배면 두세 프레임에 한 번.
   if (bullets.length > 0) {
+    bulletClock += bulletTimeScale();
+    const runs = Math.floor(bulletClock);
+    bulletClock -= runs;
+    for (let step = 0; step < runs && bullets.length > 0; step++) updateBullets();
+    if (bullets.length > 0) {
+      updateFlySound(bullets[0]);      // 소리는 대표로 첫 번째 포탄을 따라갑니다
+    } else {
+      stopFlySound();
+      waitingTurn = true;              // 대포가 다 떨어진 뒤에 턴을 넘깁니다
+    }
+  }
+
+  updateEffects();
+}
+
+// 포탄을 한 물리 스텝만큼 진행시킵니다 (더블샷이면 동시에 여러 발)
+function updateBullets() {
+  {
     const alive = [];
+    const newBullets = [];       // 스웜이 갈라져 생기는 포탄들
     for (const b of bullets) {
       b.trail.push({ x: b.x, y: b.y });
       if (b.trail.length > 55) b.trail.shift();
@@ -1254,38 +1612,87 @@ function update() {
       stepProjectile(b);
 
       let done = false;
-      // 대포에 직격
-      for (const tank of [player, enemy]) {
-        const dx = b.x - tank.x, dy = b.y - (tank.y - 10);
-        if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) {
-          createExplosion(b.x, b.y, b.who, b.shotType);
-          done = true; break;
+
+      // --- 스웜(분열탄): 정점을 지나 내려갈 때 여러 발로 갈라집니다 ---
+      if (b.proj === 'cluster' && !b.split && b.vy > 0) {
+        const st = b.who === 'player' ? player.stats : enemy.stats;
+        // clusterAt: 낙하 시작 후 얼마나 지나서 갈라질지 (0~1, 클수록 늦게)
+        b.fallTick = (b.fallTick ?? 0) + 1;
+        if (b.fallTick > 18 * (st.clusterAt ?? 0.6) * 3) {
+          b.split = true;
+          const n = st.clusterN ?? 4;
+          for (let k = 0; k < n; k++) {
+            const spread = (k - (n - 1) / 2) * 0.9;
+            newBullets.push({
+              x: b.x, y: b.y,
+              vx: b.vx + spread * 0.9,
+              vy: b.vy * 0.85 - Math.abs(spread) * 0.15,
+              trail: [], who: b.who, shotType: b.shotType,
+              proj: 'normal', windMul: b.windMul,
+              color: b.color, size: Math.max(2, b.size * 0.68),
+              spin: 0, age: 0, smokeTick: 0, fromCluster: true,
+            });
+          }
+          // 갈라지는 순간 반짝
+          flashes.push({ x: b.x, y: b.y, life: 8, maxLife: 8, color: b.color, size: 1.1 });
+          SFX.split();
+          done = true;   // 원래 포탄은 사라집니다
         }
       }
+
+      // --- 대포에 직격 ---
+      if (!done) {
+        for (const tank of [player, enemy]) {
+          const dx = b.x - tank.x, dy = b.y - (tank.y - 10);
+          if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) {
+            createExplosion(b.x, b.y, b.who, b.shotType, b.proj);
+            done = true; break;
+          }
+        }
+      }
+
       // 화면 밖으로 사라짐 (터지지 않고 그냥 없어집니다)
       if (!done && (b.x < -50 || b.x > W + 50 || b.y > GROUND_H + 140)) {
         done = true;
       } else if (!done && b.y >= 0) {
-        // 땅에 착탄
         const gx = Math.round(b.x);
         if (gx >= 0 && gx < W && b.y >= terrain[gx]) {
-          createExplosion(b.x, b.y, b.who, b.shotType);
+          // --- 볼링(굴림탄): 땅에 닿으면 터지지 않고 굴러갑니다 ---
+          if (b.proj === 'roller' && !b.rolling) {
+            b.rolling = true;
+            b.rollLeft = 150;              // 최대 150스텝(약 1.2초) 구릅니다
+            b.vy = 0;
+            b.vx *= 0.55;
+            SFX.bounce();
+          } else {
+            createExplosion(b.x, b.y, b.who, b.shotType, b.proj);
+            done = true;
+          }
+        }
+      }
+
+      // --- 볼링이 구르는 중 ---
+      if (!done && b.rolling) {
+        b.rollLeft--;
+        const gx = Math.round(b.x);
+        const gy = (gx >= 0 && gx < W) ? terrain[gx] : GROUND_H;
+        b.y = gy - 3;
+        // 경사를 따라 가속/감속 (내리막이면 빨라집니다)
+        const slope = terrainAngle(b.x);
+        b.vx += Math.sin(slope) * 0.16;
+        b.vx *= 0.985;
+        b.spin += b.vx * 0.09;
+        if (b.rollLeft <= 0 || Math.abs(b.vx) < 0.22 ||
+            b.x < 6 || b.x > W - 6) {
+          createExplosion(b.x, b.y, b.who, b.shotType, b.proj);
           done = true;
         }
       }
+
       if (!done) alive.push(b);
     }
-    bullets = alive;
-
-    if (bullets.length > 0) {
-      updateFlySound(bullets[0]);      // 소리는 대표로 첫 번째 포탄을 따라갑니다
-    } else {
-      stopFlySound();
-      waitingTurn = true;              // 대포가 다 떨어진 뒤에 턴을 넘깁니다
-    }
+    bullets = alive.concat(newBullets);
   }
-
-  updateEffects();
 }
 
 // 탱크의 움직임 갱신 (그림에만 영향, 게임 규칙과는 무관합니다)
@@ -1410,12 +1817,24 @@ function draw() {
   ctx.closePath();
   ctx.fill();
 
-  ctx.strokeStyle = map.top;
-  ctx.lineWidth = 3;
+  // 지표면 — 레퍼런스처럼 굵은 잔디층으로 그립니다
+  ctx.fillStyle = map.top;
   ctx.beginPath();
   ctx.moveTo(0, terrain[0]);
   for (let x = 1; x < W; x++) ctx.lineTo(x, terrain[x]);
-  ctx.stroke();
+  for (let x = W - 1; x >= 0; x--) ctx.lineTo(x, terrain[x] + 9);
+  ctx.closePath();
+  ctx.fill();
+  // 잔디 바로 아래 어두운 띠 (흙과의 경계)
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath();
+  ctx.moveTo(0, terrain[0] + 9);
+  for (let x = 1; x < W; x++) ctx.lineTo(x, terrain[x] + 9);
+  for (let x = W - 1; x >= 0; x--) ctx.lineTo(x, terrain[x] + 14);
+  ctx.closePath();
+  ctx.fill();
+
+  drawScenery();
 
   // 직전 착탄 ✕
   if (lastPlayerHit && phase !== 'gameover') {
@@ -1430,6 +1849,7 @@ function draw() {
 
   drawTank(player);
   drawTank(enemy);
+  drawItems();
 
   // 발사 불꽃 — 밝은 심지 + 바깥 후광 두 겹
   for (const f of flashes) {
@@ -1495,14 +1915,36 @@ function draw() {
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2); ctx.fill();
 
-    // 3) 포탄 본체 — 회전하는 네모(마름모)로 그려 굴러가는 느낌을 줍니다
+    // 3) 포탄 본체 — 기종마다 모양이 다릅니다
     ctx.save();
     ctx.translate(b.x, b.y);
-    ctx.rotate(b.spin);
-    ctx.fillStyle = b.color;
-    ctx.fillRect(-s, -s, s * 2, s * 2);
-    ctx.fillStyle = '#fff';                      // 중심의 흰 심지
-    ctx.fillRect(-s * 0.45, -s * 0.45, s * 0.9, s * 0.9);
+    if (b.proj === 'arrow') {
+      // 화살탄: 날아가는 방향으로 뾰족하게
+      ctx.rotate(Math.atan2(b.vy, b.vx));
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.moveTo(s * 2.4, 0);
+      ctx.lineTo(-s * 1.2, -s * 0.85);
+      ctx.lineTo(-s * 0.4, 0);
+      ctx.lineTo(-s * 1.2, s * 0.85);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(s * 0.2, -s * 0.28, s * 1.2, s * 0.56);
+    } else if (b.proj === 'roller') {
+      // 굴림탄: 둥근 공에 무늬가 있어 구르는 게 보입니다
+      ctx.rotate(b.spin);
+      ctx.fillStyle = b.color;
+      ctx.beginPath(); ctx.arc(0, 0, s * 1.3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(-s * 1.3, -s * 0.22, s * 2.6, s * 0.44);
+      ctx.fillRect(-s * 0.22, -s * 1.3, s * 0.44, s * 2.6);
+    } else {
+      ctx.rotate(b.spin);
+      ctx.fillStyle = b.color;
+      ctx.fillRect(-s, -s, s * 2, s * 2);
+      ctx.fillStyle = '#fff';                      // 중심의 흰 심지
+      ctx.fillRect(-s * 0.45, -s * 0.45, s * 0.9, s * 0.9);
+    }
     ctx.restore();
 
     // 4) 오브는 회전하는 고리를 두 개 더 두릅니다
@@ -1565,6 +2007,12 @@ function draw() {
   // 데미지 숫자
   ctx.textAlign = 'center';
   for (const dt of damageTexts) {
+    if (dt.pickup) {          // 아이템 획득 / 방어막 표시
+      ctx.fillStyle = dt.color;
+      ctx.font = 'bold 14px "Courier New", monospace';
+      ctx.fillText(dt.pickup, dt.x, dt.y);
+      continue;
+    }
     ctx.fillStyle = `rgba(255, 80, 80, ${dt.life})`;
     ctx.font = 'bold 20px "Courier New", monospace';
     ctx.fillText(`-${dt.value}`, dt.x, dt.y);
@@ -1623,30 +2071,41 @@ function draw() {
 
 // 맵별 배경 장식
 function drawDeco() {
-  if (map.deco === 'clouds') {
-    // 도트풍 구름 (네모 덩어리)
+  const d = map.deco;
+  if (d === 'clouds' || d === 'park' || d === 'sunset') {
+    // 도트풍 뭉게구름 — 레퍼런스처럼 네모 덩어리를 층층이 쌓습니다
+    const col = d === 'sunset' ? 'rgba(255,240,225,0.92)' : 'rgba(255,255,255,0.92)';
     for (const c of clouds) {
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
       const s = c.s;
-      ctx.fillRect(c.x - 30 * s, c.y, 60 * s, 14 * s);
-      ctx.fillRect(c.x - 18 * s, c.y - 10 * s, 36 * s, 12 * s);
-      ctx.fillRect(c.x - 6 * s,  c.y - 16 * s, 18 * s, 8 * s);
+      pxRect(c.x - 34 * s, c.y,          68 * s, 15 * s, col);
+      pxRect(c.x - 22 * s, c.y - 11 * s, 46 * s, 12 * s, col);
+      pxRect(c.x - 8 * s,  c.y - 19 * s, 24 * s, 9 * s,  col);
+      pxRect(c.x + 14 * s, c.y - 8 * s,  18 * s, 9 * s,  col);
     }
-  } else if (map.deco === 'stars') {
+    // 노을 맵은 큰 해가 하나 떠 있습니다
+    if (d === 'sunset') {
+      pxRect(W * 0.72 - 44, 118 - 44, 88, 88, 'rgba(255,214,140,0.55)');
+      pxRect(W * 0.72 - 32, 118 - 32, 64, 64, '#ffd98a');
+    }
+  } else if (d === 'stars') {
     for (const st of stars) {
       ctx.fillStyle = `rgba(255,255,230,${st.b})`;
       ctx.fillRect(st.x, st.y, 2, 2);
     }
-    // 달
-    ctx.fillStyle = '#f0ead0';
-    ctx.beginPath(); ctx.arc(W - 130, 80, 26, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = map.sky[0];
-    ctx.beginPath(); ctx.arc(W - 120, 72, 22, 0, Math.PI * 2); ctx.fill();
-  } else if (map.deco === 'snow') {
+    // 달 (도트풍 초승달)
+    pxRect(W - 150, 66, 52, 52, '#f0ead0');
+    pxRect(W - 138, 56, 44, 44, map.sky[0]);
+  } else if (d === 'snow') {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     for (const f of snowflakes) ctx.fillRect(f.x, f.y, 2, 2);
   }
 }
+
+// 지형 위 풍경 (나무·수풀·벤치 등) — 지형을 그린 뒤에 호출합니다
+function drawScenery() {
+  for (const o of scenery) drawSceneryItem(o);
+}
+
 
 // 바람 줄기 — 세기가 강할수록 길고 진하게
 function drawWindStreaks() {
@@ -1695,14 +2154,24 @@ function drawTank(p) {
   const dead = p.hp <= 0;
   const type = TANKS.indexOf(p.stats);
   const c = dead ? '#555' : p.stats.color;
-  const dark = dead ? '#3a3a3a' : shade(p.stats.color, 0.62);
-  const light = dead ? '#6a6a6a' : shade(p.stats.color, 1.25);
   const hurt = p.hp / CONFIG.maxHp;         // 체력 비율 (낮으면 연기가 납니다)
 
   ctx.save();
   // 몸체를 땅 기울기에 맞춰 기울이고, 덜컹거림만큼 위아래로 흔듭니다
   ctx.translate(p.x, p.y + p.bob);
   ctx.rotate(p.tilt);
+  drawTankBody(p, type, p.stats.color);
+  ctx.restore();
+  drawTankExtras(p, type, c, hurt, dead);
+}
+
+// 탱크 몸통만 그립니다 (원점 = 대포가 땅에 닿는 지점).
+// 실제 게임과 메뉴의 미니 탱크가 같은 그림을 쓰도록 분리했습니다.
+function drawTankBody(p, type, baseColor) {
+  const dead = p.hp <= 0;
+  const c = dead ? '#555' : baseColor;
+  const dark = dead ? '#3a3a3a' : shade(baseColor, 0.62);
+  const light = dead ? '#6a6a6a' : shade(baseColor, 1.25);
 
   // --- 포신 (반동으로 뒤로 밀렸다 돌아옵니다) ---
   // 포신 각도는 플레이어가 정한 값이므로 몸체 기울기를 상쇄해 화면 기준으로 유지합니다
@@ -1715,8 +2184,10 @@ function drawTank(p) {
     const bx = -Math.cos(rad) * back;
     const by = Math.sin(rad) * back;
 
-    const barrelLen = type === 1 ? 28 : type === 2 ? 24 : 26;
-    const barrelW   = type === 1 ? 8  : type === 2 ? 4  : 6;
+    const BLEN = [26, 28, 24, 34, 22, 24, 27];   // 랜스는 길고, 볼링은 짧습니다
+    const BW   = [6, 8, 4, 4, 7, 5, 8];
+    const barrelLen = BLEN[type] ?? 26;
+    const barrelW   = BW[type] ?? 6;
 
     // 포신 본체
     ctx.strokeStyle = dark;
@@ -1789,6 +2260,78 @@ function drawTank(p) {
       ctx.fillStyle = dark;
       ctx.fillRect(8.2, -20, 1.6, 6);              // 안테나 기둥
     }
+  } else if (type === 3) {
+    // 랜스 — 길고 낮은 저격형 차체 + 안정용 지지대
+    ctx.fillStyle = dark;
+    ctx.fillRect(-18, -8, 36, 8);
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(-18, -9); ctx.lineTo(16, -9);
+    ctx.lineTo(12, -17); ctx.lineTo(-14, -17);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = light;
+    ctx.fillRect(-14, -17, 26, 2);
+    if (!dead) {
+      ctx.fillStyle = dark;
+      ctx.fillRect(-16, -4, 5, 8);        // 뒤쪽 지지대
+      ctx.fillStyle = c;
+      ctx.fillRect(-6, -22, 12, 6);
+    }
+  } else if (type === 4) {
+    // 볼링 — 둥글넓적한 차체 + 앞쪽 투척 롤러
+    ctx.fillStyle = dark;
+    ctx.fillRect(-17, -9, 34, 9);
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.arc(0, -10, 15, Math.PI, 0); ctx.fill();
+    ctx.fillRect(-15, -11, 30, 3);
+    ctx.fillStyle = light;
+    ctx.beginPath(); ctx.arc(-3, -11, 6, Math.PI, 0); ctx.fill();
+    if (!dead) {
+      ctx.fillStyle = dark;
+      ctx.beginPath(); ctx.arc(13, -12, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = light;
+      ctx.beginPath(); ctx.arc(13, -12, 2, 0, Math.PI * 2); ctx.fill();
+    }
+  } else if (type === 5) {
+    // 스웜 — 다연장 발사대. 위에 발사관이 여러 개 보입니다.
+    ctx.fillStyle = dark;
+    ctx.fillRect(-16, -9, 32, 9);
+    ctx.fillStyle = c;
+    ctx.fillRect(-15, -16, 30, 8);
+    ctx.fillStyle = light;
+    ctx.fillRect(-15, -16, 30, 2);
+    if (!dead) {
+      ctx.fillStyle = dark;
+      for (let i = 0; i < 4; i++) ctx.fillRect(-11 + i * 6, -23, 4, 8);
+      ctx.fillStyle = c;
+      ctx.fillRect(-13, -25, 26, 3);
+    }
+  } else if (type === 6) {
+    // 드릴 — 육중한 굴착차. 앞에 회전하는 드릴 날.
+    ctx.fillStyle = dark;
+    ctx.fillRect(-19, -10, 38, 10);
+    ctx.fillStyle = c;
+    ctx.fillRect(-17, -18, 34, 9);
+    ctx.fillStyle = light;
+    ctx.fillRect(-17, -18, 34, 2);
+    if (!dead) {
+      ctx.fillStyle = c;
+      ctx.fillRect(-8, -25, 16, 8);
+      // 앞쪽 드릴 (천천히 회전)
+      ctx.save();
+      ctx.translate(17, -12);
+      ctx.rotate(Date.now() / 260);
+      ctx.fillStyle = light;
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2;
+        ctx.fillRect(Math.cos(a) * 3 - 1.5, Math.sin(a) * 3 - 1.5, 3, 3);
+      }
+      ctx.restore();
+      ctx.fillStyle = dark;
+      ctx.beginPath();
+      ctx.moveTo(13, -18); ctx.lineTo(24, -12); ctx.lineTo(13, -6);
+      ctx.closePath(); ctx.fill();
+    }
   } else {
     // 레이븐 — 정직한 표준형. 둥근 포탑 + 측면 장갑.
     ctx.fillStyle = dark;
@@ -1806,21 +2349,78 @@ function drawTank(p) {
   }
 
   // --- 바퀴 (기종마다 개수·크기가 다르고, 이동하면 굴러갑니다) ---
-  const wheels = type === 1 ? [-14, -5, 5, 14]      // 매머드: 4개 (중장갑)
-               : type === 2 ? [-10, 2, 11]          // 스톰: 3개 (경량)
-               : [-12, 0, 12];                      // 레이븐: 3개
-  const wr = type === 1 ? 5 : type === 2 ? 3.6 : 4.4;
+  const WHEELS = [
+    [-12, 0, 12],              // 0 레이븐
+    [-14, -5, 5, 14],          // 1 매머드
+    [-10, 2, 11],              // 2 스톰
+    [-13, -2, 12],             // 3 랜스
+    [-11, 1, 12],              // 4 볼링
+    [-12, -1, 11],             // 5 스웜
+    [-15, -6, 4, 14],          // 6 드릴
+  ];
+  const WR = [4.4, 5, 3.6, 4.0, 4.8, 4.2, 5.2];
+  const wheels = WHEELS[type] || WHEELS[0];
+  const wr = WR[type] ?? 4.4;
   for (const wx of wheels) drawWheel(wx, -wr + 1, wr, p.wheelSpin, dark);
 
-  // 매머드는 무한궤도 띠를 하나 더 두릅니다
-  if (type === 1) {
+  // 매머드·드릴은 무한궤도 띠를 하나 더 두릅니다
+  if (type === 1 || type === 6) {
     ctx.strokeStyle = dead ? '#3a3a3a' : '#3d3d4d';
     ctx.lineWidth = 2;
     ctx.strokeRect(-19, -9, 38, 10);
   }
+}
 
-  ctx.restore();
+// 하늘에서 떨어지는 보급품 (낙하산 + 상자)
+function drawItems() {
+  for (const it of items) {
+    const d = it.def;
+    const bob = it.landed ? Math.sin(Date.now() / 300) * 2 : 0;
+    const y = it.y + bob;
 
+    if (!it.landed) {
+      // 낙하산 — 반원 + 줄
+      ctx.fillStyle = d.color;
+      ctx.beginPath();
+      ctx.arc(it.x, y - 20, 15, Math.PI, 0);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      ctx.arc(it.x - 5, y - 20, 6, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(it.x - 14, y - 20); ctx.lineTo(it.x - 6, y - 8);
+      ctx.moveTo(it.x + 14, y - 20); ctx.lineTo(it.x + 6, y - 8);
+      ctx.stroke();
+    } else {
+      // 땅에 놓이면 반짝이는 후광
+      const pulse = 0.5 + Math.sin(Date.now() / 260) * 0.25;
+      const g = ctx.createRadialGradient(it.x, y - 2, 0, it.x, y - 2, 26);
+      g.addColorStop(0, d.color + 'aa');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(it.x, y - 2, 26, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // 상자
+    ctx.fillStyle = shade(d.color, 0.55);
+    ctx.fillRect(it.x - 11, y - 9, 22, 18);
+    ctx.fillStyle = d.color;
+    ctx.fillRect(it.x - 9, y - 7, 18, 14);
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.fillText(d.icon, it.x, y + 5);
+    ctx.textAlign = 'left';
+  }
+}
+
+// 탱크 주변에 그리는 것들 (연기·차례 표시) — 화면 좌표 기준이라 몸통과 분리했습니다
+function drawTankExtras(p, type, c, hurt, dead) {
   // --- 피해 상태: 체력이 낮으면 연기가 피어오릅니다 ---
   if (!dead && hurt < 0.45) {
     const puffs = hurt < 0.2 ? 3 : 2;
@@ -1863,35 +2463,35 @@ function drawHUD() {
   ctx.fillStyle = player.stats.color;
   ctx.font = 'bold 13px "Courier New", monospace';
   ctx.fillText(`나 · ${player.stats.name}`, 14, HUD_Y + 20);
-  bar(14, HUD_Y + 28, 150, 12, player.hp / CONFIG.maxHp, hpColor(player.hp), player.stats.color);
+  bar(14, HUD_Y + 28, 180, 14, player.hp / CONFIG.maxHp, hpColor(player.hp), player.stats.color);
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '10px "Courier New", monospace';
-  ctx.fillText('연료', 14, HUD_Y + 54);
-  bar(46, HUD_Y + 46, 118, 7, player.fuel / CONFIG.fuelMax, '#e8c14a', '#555');
+  ctx.fillText('연료', 14, HUD_Y + 58);
+  bar(46, HUD_Y + 50, 148, 8, player.fuel / CONFIG.fuelMax, '#e8c14a', '#555');
   // 오브 게이지 — 가득 차면 금빛으로 반짝입니다
   const gFull = player.gauge >= CONFIG.gaugeMax;
   ctx.fillStyle = gFull ? '#ffd700' : '#8fa3b8';
-  ctx.fillText('오브', 14, HUD_Y + 68);
-  bar(46, HUD_Y + 60, 118, 7, player.gauge / CONFIG.gaugeMax,
+  ctx.fillText('오브', 14, HUD_Y + 74);
+  bar(46, HUD_Y + 66, 148, 8, player.gauge / CONFIG.gaugeMax,
       gFull ? (Math.floor(Date.now() / 250) % 2 ? '#ffd700' : '#fff3b0') : '#7b5cff', '#555');
 
   // === 각도 + 지난 발사 (중앙 왼쪽) ===
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '11px "Courier New", monospace';
-  ctx.fillText('각도', 200, HUD_Y + 18);
+  ctx.fillText('각도', 250, HUD_Y + 18);
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 26px "Courier New", monospace';
-  ctx.fillText(`${Math.round(player.angle)}°`, 200, HUD_Y + 44);
+  ctx.fillText(`${Math.round(player.angle)}°`, 250, HUD_Y + 46);
   ctx.font = '9px "Courier New", monospace';
   if (showHint && myLastShot) {
     ctx.fillStyle = '#c9b46a';
-    ctx.fillText(`지난 ${myLastShot.angle}° ${myLastShot.power}%`, 200, HUD_Y + 68);
+    ctx.fillText(`지난 ${myLastShot.angle}° ${myLastShot.power}%`, 250, HUD_Y + 72);
   } else if (showHint) {
     ctx.fillStyle = '#556377';
-    ctx.fillText('아직 발사 전', 200, HUD_Y + 68);
+    ctx.fillText('아직 발사 전', 250, HUD_Y + 72);
   } else {
     ctx.fillStyle = '#556377';
-    ctx.fillText('힌트 꺼짐 (H)', 200, HUD_Y + 68);
+    ctx.fillText('힌트 꺼짐 (H)', 250, HUD_Y + 72);
   }
 
   // === 발사 종류 선택 (1 / 2 / 오브) ===
@@ -1902,26 +2502,26 @@ function drawHUD() {
   ];
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '11px "Courier New", monospace';
-  ctx.fillText('발사', 276, HUD_Y + 18);
+  ctx.fillText('발사', 340, HUD_Y + 18);
   for (let i = 0; i < shotList.length; i++) {
     const s = shotList[i];
-    const bx = 276 + i * 30, by = HUD_Y + 26;
+    const bx = 340 + i * 32, by = HUD_Y + 26;
     const on = selShot === s.id;
     const locked = s.id === 'orb' && player.gauge < CONFIG.gaugeMax;
     ctx.fillStyle = on ? 'rgba(255,215,0,0.22)' : 'rgba(255,255,255,0.05)';
-    ctx.fillRect(bx, by, 26, 24);
+    ctx.fillRect(bx, by, 28, 26);
     ctx.strokeStyle = on ? '#ffd700' : locked ? '#3a4a63' : '#5d7089';
     ctx.lineWidth = on ? 2 : 1;
-    ctx.strokeRect(bx + 0.5, by + 0.5, 25, 23);
+    ctx.strokeRect(bx + 0.5, by + 0.5, 27, 25);
     ctx.textAlign = 'center';
     ctx.fillStyle = locked ? '#4a5568' : on ? '#ffd700' : '#a8b8cc';
     ctx.font = 'bold 13px "Courier New", monospace';
-    ctx.fillText(s.label, bx + 13, by + 17);
+    ctx.fillText(s.label, bx + 14, by + 18);
     ctx.textAlign = 'left';
   }
 
   // === 파워 게이지 (중앙) ===
-  const PW_X = 372, PW_W = 200;   // 발사 종류 칸(276~354) 오른쪽에 놓습니다
+  const PW_X = 452, PW_W = 300;   // 발사 종류 칸(340~436) 오른쪽에 놓습니다
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '11px "Courier New", monospace';
   ctx.fillText('파워', PW_X, HUD_Y + 18);
@@ -1952,17 +2552,17 @@ function drawHUD() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '11px "Courier New", monospace';
-  ctx.fillText('바람', 640, HUD_Y + 18);
+  ctx.fillText('바람', 830, HUD_Y + 18);
   ctx.font = 'bold 15px "Courier New", monospace';
   if (windLevel === 0) {
     ctx.fillStyle = '#6d7a8f';
-    ctx.fillText('없음', 640, HUD_Y + 40);
+    ctx.fillText('없음', 830, HUD_Y + 42);
   } else {
     const arrows = (windLevel > 0 ? '→' : '←').repeat(Math.abs(windLevel));
     ctx.fillStyle = Math.abs(windLevel) >= 4 ? '#ffab5c' : '#cfe8ff';
-    ctx.fillText(arrows, 640, HUD_Y + 40);
+    ctx.fillText(arrows, 830, HUD_Y + 42);
     ctx.font = 'bold 12px "Courier New", monospace';
-    ctx.fillText(`${Math.abs(windLevel)}`, 640, HUD_Y + 58);
+    ctx.fillText(`${Math.abs(windLevel)}`, 830, HUD_Y + 62);
   }
   ctx.textAlign = 'left';
 
@@ -1972,27 +2572,46 @@ function drawHUD() {
   ctx.font = 'bold 13px "Courier New", monospace';
   ctx.fillText(`적 · ${enemy.stats.name}`, W - 14, HUD_Y + 20);
   ctx.textAlign = 'left';
-  bar(W - 164, HUD_Y + 28, 150, 12, enemy.hp / CONFIG.maxHp, hpColor(enemy.hp), '#f56b6b');
+  bar(W - 194, HUD_Y + 28, 180, 14, enemy.hp / CONFIG.maxHp, hpColor(enemy.hp), '#f56b6b');
   // 적 오브 게이지 — 가득 차면 곧 필살기가 날아온다는 경고입니다
   const eFull = enemy.gauge >= CONFIG.gaugeMax;
   ctx.textAlign = 'right';
   ctx.font = '9px "Courier New", monospace';
   ctx.fillStyle = eFull ? '#ffd700' : '#6d7a8f';
-  ctx.fillText(eFull ? '오브 준비됨!' : '오브', W - 168, HUD_Y + 52);
+  ctx.fillText(eFull ? '오브 준비됨!' : '오브', W - 198, HUD_Y + 58);
   ctx.textAlign = 'left';
-  bar(W - 164, HUD_Y + 45, 150, 7, enemy.gauge / CONFIG.gaugeMax,
+  bar(W - 194, HUD_Y + 50, 180, 8, enemy.gauge / CONFIG.gaugeMax,
       eFull ? (Math.floor(Date.now() / 250) % 2 ? '#ffd700' : '#fff3b0') : '#7b5cff', '#555');
 
   // === 음소거 표시 (오른쪽 아래) ===
   ctx.textAlign = 'right';
   ctx.font = '10px "Courier New", monospace';
   ctx.fillStyle = muted ? '#6d7a8f' : '#7ec850';
-  ctx.fillText(muted ? '🔇 소리꺼짐 (X)' : '🔊 소리켜짐 (X)', W - 14, HUD_Y + 68);
+  ctx.fillText(muted ? '🔇 소리꺼짐 (X)' : '🔊 소리켜짐 (X)', W - 14, HUD_Y + 76);
   ctx.textAlign = 'left';
+  // 지금 걸린 아이템 효과
+  const buffs = [];
+  if (player.buffDouble) buffs.push(['2연발', '#ffd34e']);
+  if (player.buffPower)  buffs.push(['강화탄', '#ff7a5c']);
+  if (player.buffShield) buffs.push(['방어막', '#5cc8f5']);
+  let bx2 = 250;
+  for (const [label, col] of buffs) {
+    ctx.fillStyle = col + '33';
+    ctx.fillRect(bx2, HUD_Y + 54, 54, 16);
+    ctx.strokeStyle = col; ctx.lineWidth = 1;
+    ctx.strokeRect(bx2 + 0.5, HUD_Y + 54.5, 53, 15);
+    ctx.fillStyle = col;
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, bx2 + 27, HUD_Y + 65);
+    ctx.textAlign = 'left';
+    bx2 += 58;
+  }
+
   // 현재 난이도 (왼쪽 아래 구석)
   ctx.fillStyle = DIFFICULTY[selDiff].color;
   ctx.font = '9px "Courier New", monospace';
-  ctx.fillText(DIFFICULTY[selDiff].name, 172, HUD_Y + 20);
+  ctx.fillText(DIFFICULTY[selDiff].name, 202, HUD_Y + 20);
 }
 
 function bar(x, y, w, h, ratio, color, border) {
@@ -2012,11 +2631,20 @@ function hpColor(hp) {
 
 // ---------- 메뉴 화면 ----------
 // 왼쪽 열(x 40~510)에 선택 항목, 오른쪽 열(x 530~780)에 조작표를 둡니다
-function tankCardRect(i)  { return { x: 34 + i * 150, y: 108, w: 142, h: 104 }; }
-function enemyCardRect(i) { return { x: 34 + i * 113, y: 246, w: 106, h: 46 }; }
-function diffCardRect(i)  { return { x: 34 + i * 150, y: 326, w: 142, h: 44 }; }
-function mapCardRect(i)   { return { x: 34 + i * 150, y: 404, w: 142, h: 58 }; }
-function startBtnRect()   { return { x: 34, y: 486, w: 418, h: 44 }; }
+const MENU_L = 30;               // 왼쪽 열 시작 x
+// 내 탱크 7종은 4+3 두 줄로 배치합니다
+function tankCardRect(i) {
+  const col = i % 4, row = Math.floor(i / 4);
+  return { x: MENU_L + col * 132, y: 116 + row * 116, w: 124, h: 108 };
+}
+// 상대 탱크 8칸(7기종 + 무작위)도 4+4 두 줄
+function enemyCardRect(i) {
+  const col = i % 4, row = Math.floor(i / 4);
+  return { x: MENU_L + col * 132, y: 372 + row * 50, w: 124, h: 44 };
+}
+function diffCardRect(i)  { return { x: MENU_L + i * 176, y: 500, w: 166, h: 46 }; }
+function mapCardRect(i)   { return { x: MENU_L + i * 106, y: 588, w: 100, h: 54 }; }
+function startBtnRect()   { return { x: MENU_L, y: 660, w: 524, h: 48 }; }
 
 function drawMenu() {
   // 배경
@@ -2029,19 +2657,19 @@ function drawMenu() {
   // 제목
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 40px "Courier New", monospace';
-  ctx.fillText('F O R T R E S S', W / 2, 52);
+  ctx.font = 'bold 52px "Courier New", monospace';
+  ctx.fillText('F O R T R E S S', W / 2, 64);
   ctx.fillStyle = '#6d7a8f';
   ctx.font = '12px "Courier New", monospace';
-  ctx.fillText('탱크 · 상대 · 난이도 · 맵을 고르고 출격하세요', W / 2, 74);
+  ctx.fillText('탱크 · 상대 · 난이도 · 맵을 고르고 출격하세요', W / 2, 90);
 
   // --- 내 탱크 선택 ---
   ctx.textAlign = 'left';
   ctx.fillStyle = menuRow === 0 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 0 ? '▶ 1. 내 탱크' : '  1. 내 탱크', 34, 100);
+  ctx.fillText(menuRow === 0 ? '▶ 1. 내 탱크' : '  1. 내 탱크', MENU_L, 106);
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < TANKS.length; i++) {
     const r = tankCardRect(i);
     const t = TANKS[i];
     const sel = selTank === i;
@@ -2053,29 +2681,29 @@ function drawMenu() {
     ctx.strokeRect(r.x, r.y, r.w, r.h);
 
     // 미니 탱크 그림
-    drawMiniTank(i, r.x + r.w / 2, r.y + 40, t.color, 0.95);
+    drawMiniTank(i, r.x + r.w / 2, r.y + 36, t.color, 0.82);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = t.color;
-    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.font = 'bold 13px "Courier New", monospace';
     ctx.fillText(t.name, r.x + r.w / 2, r.y + 68);
     ctx.fillStyle = '#8fa3b8';
-    ctx.font = '9px "Courier New", monospace';
-    ctx.fillText(t.desc.split(' — ')[1], r.x + r.w / 2, r.y + 84);
+    ctx.font = '8px "Courier New", monospace';
+    ctx.fillText(t.desc.split(' — ')[0], r.x + r.w / 2, r.y + 84);
     ctx.fillStyle = '#c9b46a';
-    ctx.fillText(`한방 ${t.dmg} · 범위 ${t.radius}`, r.x + r.w / 2, r.y + 98);
+    ctx.fillText(`${t.dmg} / ${t.radius}`, r.x + r.w / 2, r.y + 99);
     ctx.textAlign = 'left';
   }
 
   // --- 상대 탱크 선택 (무작위 포함 4칸) ---
   ctx.fillStyle = menuRow === 1 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 1 ? '▶ 2. 상대 탱크' : '  2. 상대 탱크', 34, 238);
+  ctx.fillText(menuRow === 1 ? '▶ 2. 상대 탱크' : '  2. 상대 탱크', MENU_L, 362);
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < TANKS.length + 1; i++) {
     const r = enemyCardRect(i);
     const sel = selEnemy === i;
-    const isRandom = i === 3;
+    const isRandom = i === TANKS.length;
     const t = isRandom ? null : TANKS[i];
 
     ctx.fillStyle = sel ? 'rgba(245,107,107,0.10)' : 'rgba(255,255,255,0.03)';
@@ -2088,17 +2716,17 @@ function drawMenu() {
     if (isRandom) {
       ctx.fillStyle = sel ? '#f56b6b' : '#8fa3b8';
       ctx.font = 'bold 18px "Courier New", monospace';
-      ctx.fillText('?', r.x + r.w / 2, r.y + 24);
-      ctx.font = 'bold 11px "Courier New", monospace';
-      ctx.fillText('무작위', r.x + r.w / 2, r.y + 38);
+      ctx.fillText('?', r.x + r.w / 2, r.y + 20);
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillText('무작위', r.x + r.w / 2, r.y + 35);
     } else {
-      drawMiniTank(i, r.x + 24, r.y + 24, t.color, 0.48);
+      drawMiniTank(i, r.x + 24, r.y + 22, t.color, 0.44);
       ctx.fillStyle = t.color;
-      ctx.font = 'bold 12px "Courier New", monospace';
-      ctx.fillText(t.name, r.x + 70, r.y + 22);
+      ctx.font = 'bold 11px "Courier New", monospace';
+      ctx.fillText(t.name, r.x + 78, r.y + 20);
       ctx.fillStyle = '#8fa3b8';
       ctx.font = '8px "Courier New", monospace';
-      ctx.fillText(`${t.dmg} / ${t.radius}`, r.x + 70, r.y + 35);
+      ctx.fillText(`${t.dmg}/${t.radius}`, r.x + 78, r.y + 34);
     }
     ctx.textAlign = 'left';
   }
@@ -2106,7 +2734,7 @@ function drawMenu() {
   // --- 난이도 선택 ---
   ctx.fillStyle = menuRow === 2 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 2 ? '▶ 3. 난이도' : '  3. 난이도', 34, 318);
+  ctx.fillText(menuRow === 2 ? '▶ 3. 난이도' : '  3. 난이도', MENU_L, 490);
 
   for (let i = 0; i < 3; i++) {
     const r = diffCardRect(i);
@@ -2120,19 +2748,19 @@ function drawMenu() {
     ctx.textAlign = 'center';
     ctx.fillStyle = sel ? d.color : '#a8b8cc';
     ctx.font = 'bold 14px "Courier New", monospace';
-    ctx.fillText(d.name, r.x + r.w / 2, r.y + 20);
+    ctx.fillText(d.name, r.x + r.w / 2, r.y + 22);
     ctx.fillStyle = '#6d7a8f';
     ctx.font = '9px "Courier New", monospace';
-    ctx.fillText(d.desc, r.x + r.w / 2, r.y + 35);
+    ctx.fillText(d.desc, r.x + r.w / 2, r.y + 40);
     ctx.textAlign = 'left';
   }
 
   // --- 맵 선택 ---
   ctx.fillStyle = menuRow === 3 ? '#ffd700' : '#8fa3b8';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText(menuRow === 3 ? '▶ 4. 맵 선택' : '  4. 맵 선택', 34, 396);
+  ctx.fillText(menuRow === 3 ? '▶ 4. 맵 선택' : '  4. 맵 선택', MENU_L, 578);
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < MAPS.length; i++) {
     const r = mapCardRect(i);
     const m = MAPS[i];
     const sel = selMap === i;
@@ -2160,8 +2788,8 @@ function drawMenu() {
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 13px "Courier New", monospace';
-    ctx.fillText(m.name, r.x + r.w / 2, r.y + r.h - 7);
+    ctx.font = 'bold 11px "Courier New", monospace';
+    ctx.fillText(m.name, r.x + r.w / 2, r.y + r.h - 6);
     ctx.textAlign = 'left';
   }
 
@@ -2175,12 +2803,12 @@ function drawMenu() {
   ctx.strokeRect(b.x, b.y, b.w, b.h);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd700';
-  ctx.font = 'bold 18px "Courier New", monospace';
-  ctx.fillText('출  격 !  (Enter)', b.x + b.w / 2, b.y + 29);
+  ctx.font = 'bold 22px "Courier New", monospace';
+  ctx.fillText('출  격 !  (Enter)', b.x + b.w / 2, b.y + 34);
 
   ctx.fillStyle = '#556377';
   ctx.font = '10px "Courier New", monospace';
-  ctx.fillText('↑↓ 줄 이동 · ←→ 선택 · 마우스 클릭도 됩니다', b.x + b.w / 2, 548);
+  ctx.fillText('↑↓ 줄 이동 · ←→ 선택 · 마우스 클릭도 됩니다', b.x + b.w / 2, 660);
   ctx.textAlign = 'left';
 
   drawControlsPanel();
@@ -2188,7 +2816,7 @@ function drawMenu() {
 
 // 오른쪽 조작표 — 처음 여는 사람이 조작법을 바로 알 수 있게 게임 화면 안에 둡니다
 function drawControlsPanel() {
-  const px = 500, py = 100, pw = 262, ph = 430;
+  const px = 600, py = 106, pw = 300, ph = 540;
   ctx.fillStyle = 'rgba(255,255,255,0.035)';
   ctx.fillRect(px, py, pw, ph);
   ctx.strokeStyle = '#3a4a63';
@@ -2198,7 +2826,7 @@ function drawControlsPanel() {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#ffd700';
   ctx.font = 'bold 14px "Courier New", monospace';
-  ctx.fillText('조 작 법', px + 16, py + 26);
+  ctx.fillText('조 작 법', px + 18, py + 28);
   ctx.fillStyle = '#3a4a63';
   ctx.fillRect(px + 16, py + 34, pw - 32, 1);
 
@@ -2216,7 +2844,7 @@ function drawControlsPanel() {
     ['R', '같은 조건 재대결'],
     ['M', '이 화면으로'],
   ];
-  let y = py + 58;
+  let y = py + 62;
   for (const [key, desc] of rows) {
     if (!key) { y += 10; continue; }
     ctx.fillStyle = '#e8c14a';
@@ -2224,8 +2852,8 @@ function drawControlsPanel() {
     ctx.fillText(key, px + 18, y);
     ctx.fillStyle = '#a8b8cc';
     ctx.font = '11px "Courier New", monospace';
-    ctx.fillText(desc, px + 108, y);
-    y += 22;
+    ctx.fillText(desc, px + 120, y);
+    y += 25;
   }
 
   // 핵심 규칙 요약
@@ -2250,56 +2878,20 @@ function drawControlsPanel() {
 // 메뉴 카드용 미니 탱크.
 // 실제 게임의 drawTank와 같은 모양을 그려서, 고른 것과 나오는 게 일치하게 합니다.
 function drawMiniTank(type, cx, cy, color, scale = 1) {
-  const dark = shade(color, 0.62);
-  const light = shade(color, 1.25);
+  // 실제 게임의 drawTank를 그대로 재사용합니다.
+  // 예전엔 같은 그림을 두 벌 유지했는데, 기종이 7개로 늘면서 어긋나기 쉬워졌습니다.
+  const fake = {
+    x: 0, y: 0, hp: CONFIG.maxHp, angle: 32, drawAngle: 32,
+    stats: TANKS[type], tilt: 0, recoil: 0, wheelSpin: 0, bob: 0,
+    fallFrom: null, gauge: 0, fuel: 0,
+  };
   ctx.save();
-  ctx.translate(cx, cy + 8 * scale);
+  ctx.translate(cx, cy + 9 * scale);
   ctx.scale(scale, scale);
-
-  // 포신
-  const rad = 32 * Math.PI / 180;
-  const bl = type === 1 ? 28 : type === 2 ? 24 : 26;
-  const bw = type === 1 ? 8 : type === 2 ? 4 : 6;
-  ctx.strokeStyle = dark; ctx.lineWidth = bw + 2;
-  ctx.beginPath(); ctx.moveTo(0, -14);
-  ctx.lineTo(Math.cos(rad) * bl, -14 - Math.sin(rad) * bl); ctx.stroke();
-  ctx.strokeStyle = '#cfd8dc'; ctx.lineWidth = bw;
-  ctx.beginPath(); ctx.moveTo(0, -14);
-  ctx.lineTo(Math.cos(rad) * bl, -14 - Math.sin(rad) * bl); ctx.stroke();
-
-  if (type === 1) {
-    ctx.fillStyle = dark; ctx.fillRect(-20, -9, 40, 9);
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(-19, -10); ctx.lineTo(19, -10);
-    ctx.lineTo(15, -20); ctx.lineTo(-15, -20);
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = light; ctx.fillRect(-15, -20, 30, 3);
-    ctx.fillStyle = color; ctx.fillRect(-9, -26, 18, 7);
-  } else if (type === 2) {
-    ctx.fillStyle = dark; ctx.fillRect(-15, -8, 30, 8);
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(-15, -9); ctx.lineTo(13, -9);
-    ctx.lineTo(16, -14); ctx.lineTo(-11, -16);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.arc(0, -16, 6, Math.PI, 0); ctx.fill();
-    ctx.strokeStyle = light; ctx.lineWidth = 1.6;
-    ctx.beginPath(); ctx.arc(9, -20, 4.5, -Math.PI * 0.85, -Math.PI * 0.15); ctx.stroke();
-    ctx.fillStyle = dark; ctx.fillRect(8.2, -20, 1.6, 6);
-  } else {
-    ctx.fillStyle = dark; ctx.fillRect(-17, -9, 34, 9);
-    ctx.fillStyle = color; ctx.fillRect(-16, -16, 32, 8);
-    ctx.fillStyle = light; ctx.fillRect(-16, -16, 32, 2);
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(0, -16, 8.5, Math.PI, 0); ctx.fill();
-  }
-
-  const wheels = type === 1 ? [-14, -5, 5, 14] : type === 2 ? [-10, 2, 11] : [-12, 0, 12];
-  const wr = type === 1 ? 5 : type === 2 ? 3.6 : 4.4;
-  for (const wx of wheels) drawWheel(wx, -wr + 1, wr, 0, dark);
+  drawTankBody(fake, type, color);
   ctx.restore();
 }
+
 
 // ---------- 게임 종료 화면 ----------
 function drawGameOver() {
