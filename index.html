@@ -21,22 +21,37 @@
     align-items: center;
     justify-content: center;
     min-height: 100vh;
-    gap: 10px;
+    gap: 6px;
+    padding: 6px;
     user-select: none;
+    overflow: hidden;          /* 스크롤바가 생겨 화면이 흔들리지 않게 */
   }
 
-  h1 { font-size: 16px; letter-spacing: 3px; color: #ffd700; }
+  h1 { font-size: 15px; letter-spacing: 3px; color: #ffd700; margin: 2px 0; }
 
+  /* 캔버스는 항상 1100x720으로 그리되, 화면이 작으면 CSS로 통째로 줄여
+     보여줍니다. 게임 내부 좌표는 그대로라 밸런스나 조준에 영향이 없습니다.
+     (13인치 노트북에서 HUD가 잘리던 문제를 이렇게 해결했습니다) */
   #frame {
     border: 4px solid #2a3244;
     border-radius: 6px;
     background: #000;
     image-rendering: pixelated;
     box-shadow: 0 0 40px rgba(30, 90, 160, 0.25);
+    line-height: 0;            /* 캔버스 아래 빈 틈 제거 */
+    max-width: 100%;
+  }
+  #game {
+    display: block;
+    /* 가로·세로 중 더 빡빡한 쪽에 맞춰 줄어듭니다 */
+    max-width: 100%;
+    max-height: calc(100vh - 84px);
+    width: auto;
+    height: auto;
   }
   canvas { display: block; image-rendering: pixelated; }
 
-  #help { font-size: 12px; color: #6d7a8f; line-height: 1.8; text-align: center; }
+  #help { font-size: 11px; color: #6d7a8f; line-height: 1.5; text-align: center; }
   #help b { color: #ffd700; }
 </style>
 </head>
@@ -49,7 +64,6 @@
   </div>
 
   <div id="help">
-    <b>← →</b> 이동(연료 소모) &nbsp; <b>↑ ↓</b> 각도 &nbsp; <b>스페이스 꾹</b> 파워→발사 &nbsp;
     <b>↑↓</b> 각도 &nbsp; <b>←→</b> 이동 &nbsp; <b>스페이스 꾹</b> 발사 &nbsp;
     <b>1 2 S</b> 발사 종류 &nbsp; <b>ESC</b> 일시정지 &nbsp; <b>M</b> 처음 화면(조작법 전체)
   </div>
@@ -112,10 +126,21 @@ const CONFIG = {
 // 연결한 뒤 → 볼륨을 빠르게 0으로 줄이면 "펑" 하는 효과음이 됩니다.
 // 이 방식이라 파일이 index.html 하나로 유지되고, 8비트 레트로 느낌과도 잘 맞습니다.
 
+// 브라우저에 따라(사파리 시크릿 모드, 쿠키 차단 등) localStorage 접근 자체가
+// 오류를 냅니다. 그대로 두면 음소거 키를 누르는 순간 게임이 멈추므로 감쌉니다.
+const store = {
+  get(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* 저장 못 해도 계속 진행 */ }
+  },
+};
+
 let audioCtx = null;
 let masterGain = null;    // 전체 볼륨 손잡이
 let masterFilter = null;  // 전체에 씌우는 "부드럽게 만드는" 필터
-let muted = localStorage.getItem('fortress_muted') === '1';
+let muted = store.get('fortress_muted') === '1';
 
 // 브라우저는 사용자가 키를 누르거나 클릭하기 전엔 소리를 못 내게 막습니다(자동재생 차단).
 // 그래서 첫 입력이 들어온 순간에 이 함수로 오디오를 깨웁니다.
@@ -414,7 +439,7 @@ function stopFlySound() {
 
 function toggleMute() {
   muted = !muted;
-  localStorage.setItem('fortress_muted', muted ? '1' : '0');
+  store.set('fortress_muted', muted ? '1' : '0');
   if (muted) { stopChargeSound(); stopFlySound(); }
 }
 
@@ -468,7 +493,7 @@ const DIFFICULTY = [
   { name: '보통',   desc: '사람처럼 점점 정확해짐', firstError: 520, decay: 0.86, minError: 95,  color: '#e8c14a' },
   { name: '어려움', desc: '실수하면 바로 응징',     firstError: 300, decay: 0.62, minError: 30,  color: '#f56b6b' },
 ];
-let selDiff = Number(localStorage.getItem('fortress_diff') ?? 1);
+let selDiff = Number(store.get('fortress_diff') ?? 1);
 if (!(selDiff >= 0 && selDiff <= 2)) selDiff = 1;
 
 // 고른 난이도를 CONFIG에 반영합니다
@@ -477,7 +502,7 @@ function applyDifficulty() {
   CONFIG.aiFirstError = d.firstError;
   CONFIG.aiErrorDecay = d.decay;
   CONFIG.aiMinError  = d.minError;
-  localStorage.setItem('fortress_diff', String(selDiff));
+  store.set('fortress_diff', String(selDiff));
 }
 
 // ---------- 맵 3종 ----------
@@ -706,7 +731,7 @@ let record = loadRecord();
 function loadRecord() {
   const blank = { wins: 0, losses: 0, draws: 0, streak: 0, bestStreak: 0 };
   try {
-    const raw = localStorage.getItem(RECORD_KEY);
+    const raw = store.get(RECORD_KEY);
     if (!raw) return blank;
     const r = JSON.parse(raw);
     // 저장된 값이 깨져 있어도 게임이 멈추지 않게 하나씩 확인합니다
@@ -720,7 +745,7 @@ function loadRecord() {
 }
 
 function saveRecord() {
-  try { localStorage.setItem(RECORD_KEY, JSON.stringify(record)); } catch (e) { /* 저장 실패는 무시 */ }
+  store.set(RECORD_KEY, JSON.stringify(record));
 }
 
 function addResult(result) {
@@ -1417,7 +1442,12 @@ window.addEventListener('blur', () => {
 canvas.addEventListener('click', (e) => {
   initAudio();                       // 첫 클릭에도 오디오를 깨웁니다
   if (phase !== 'menu') return;
-  const mx = e.offsetX, my = e.offsetY;
+  // 화면이 작으면 캔버스가 CSS로 줄어들어 있습니다. 그래서 화면상의 클릭
+  // 위치를 게임 내부 좌표(1100x720)로 환산해야 카드가 제대로 눌립니다.
+  // (e.offsetX를 그대로 쓰면 축소된 화면에서 엉뚱한 곳이 눌립니다)
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
   const inside = (r) => mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
   for (let i = 0; i < TANKS.length; i++)
     if (inside(tankCardRect(i))) { selTank = i; menuRow = 0; SFX.click(); return; }
