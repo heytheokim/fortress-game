@@ -526,14 +526,53 @@ function fire(shooter, angle, powerVal, who, shotType = 'single') {
       vy: -Math.sin(rad) * speed,
       trail: [], who, shotType,
       color: shotType === 'orb' ? '#ffe680' : stats.trail,
-      size: shotType === 'orb' ? stats.shell + 3 : stats.shell,
+      // 포탄을 훨씬 크게 (예전엔 3~5px 네모라 밋밋했습니다)
+      size: (shotType === 'orb' ? stats.shell + 5 : stats.shell + 2.5),
+      spin: 0,             // 포탄이 회전합니다
+      age: 0,              // 날아간 시간 (꼬리 길이·발광에 씀)
+      smokeTick: 0,        // 연기를 뿜는 주기
     });
   }
 
   // 발사 순간의 불꽃(머즐 플래시)
+  // --- 발사 순간 연출 ---
   const b0 = bullets[0];
-  flashes.push({ x: b0.x, y: b0.y, life: shotType === 'orb' ? 12 : 7,
-                 color: shotType === 'orb' ? '#ffe680' : stats.trail });
+  const rad0 = angle * Math.PI / 180;
+  const isOrb = shotType === 'orb';
+
+  // 머즐 플래시 (커졌습니다)
+  flashes.push({ x: b0.x, y: b0.y, life: isOrb ? 16 : 10, maxLife: isOrb ? 16 : 10,
+                 color: isOrb ? '#ffe680' : stats.trail,
+                 size: isOrb ? 2.2 : 1.4 });
+
+  // 포구에서 뿜어나오는 불꽃 — 포신 방향으로 부채꼴로 퍼집니다
+  const blastN = isOrb ? 22 : 14;
+  for (let i = 0; i < blastN; i++) {
+    const spreadA = rad0 + (Math.random() - 0.5) * 0.85;
+    const sp = (1.6 + Math.random() * 4.2) * (isOrb ? 1.5 : 1);
+    sparks.push({
+      x: b0.x, y: b0.y,
+      vx: Math.cos(spreadA) * sp,
+      vy: -Math.sin(spreadA) * sp,
+      life: 1, size: 2 + Math.random() * 2,
+      decay: 0.05, gravity: 0.06,
+      color: isOrb ? (Math.random() < 0.5 ? '#ffd34e' : '#fff6c9')
+                   : (Math.random() < 0.5 ? stats.expl[0] : stats.trail),
+    });
+  }
+  // 포구 연기 구름
+  for (let i = 0; i < (isOrb ? 8 : 5); i++) {
+    smoke.push({
+      x: b0.x + (Math.random() - 0.5) * 6,
+      y: b0.y + (Math.random() - 0.5) * 6,
+      vx: Math.cos(rad0) * (0.5 + Math.random()) + (Math.random() - 0.5) * 0.5,
+      vy: -Math.sin(rad0) * (0.5 + Math.random()) - 0.2,
+      r: 4 + Math.random() * 5, life: 1, decay: 0.022,
+      color: isOrb ? '255,235,180' : '210,210,220',
+    });
+  }
+  // 발사 반동으로 화면이 살짝 흔들립니다
+  shake = Math.max(shake, isOrb ? 7 : 3.5);
 
   // 발사 반동 — 파워가 셀수록, 오브일수록 크게 밀립니다
   shooter.recoil = (5 + powerVal * 0.06) * (shotType === 'orb' ? 1.8 : 1);
@@ -558,6 +597,8 @@ let flashes = [];       // 발사 불꽃
 let damageTexts = [];
 let confetti = [];      // 승리 폭죽
 let shockwaves = [];    // 폭발 충격파 고리 (스톰·오브)
+let smoke = [];         // 포탄이 지나간 자리에 남는 연기
+let screenFlash = 0;    // 오브 착탄 시 화면 전체가 번쩍이는 정도
 
 function createExplosion(x, y, who, shotType = 'single') {
   const base = who === 'player' ? player.stats : enemy.stats;
@@ -574,6 +615,30 @@ function createExplosion(x, y, who, shotType = 'single') {
   explosions.push({ x, y, radius: 0, life: 1, maxR: stats.radius, colors: stats.expl });
   shake = base.shake * (shotType === 'orb' ? 1.8 : shot.dmgMul);
   if (shotType === 'orb') SFX.orbHit(base); else SFX.explode(base);
+
+  // 착탄 순간의 흰 섬광 — "쿵" 하고 터진 느낌을 만듭니다
+  flashes.push({ x, y, life: shotType === 'orb' ? 14 : 9,
+                 maxLife: shotType === 'orb' ? 14 : 9,
+                 color: stats.expl[1],
+                 size: (stats.radius / 35) * (shotType === 'orb' ? 2.4 : 1.6) });
+
+  // 피어오르는 연기 기둥
+  const smokeN = Math.round(stats.radius / 4) + (shotType === 'orb' ? 8 : 0);
+  for (let i = 0; i < smokeN; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = Math.random() * stats.radius * 0.7;
+    smoke.push({
+      x: x + Math.cos(a) * d,
+      y: y + Math.sin(a) * d * 0.5,
+      vx: Math.cos(a) * (0.3 + Math.random() * 0.8),
+      vy: -0.3 - Math.random() * 0.9,
+      r: 5 + Math.random() * 8, life: 1, decay: 0.012,
+      color: shotType === 'orb' ? '255,225,160' : '120,115,120',
+    });
+  }
+
+  // 화면 전체가 번쩍 (오브만) — 필살기라는 게 확실히 느껴지게
+  if (shotType === 'orb') screenFlash = 0.55;
 
   // 파편 — 기종마다 튀는 모양이 다릅니다
   //   매머드: 적고 무거운 파편이 느리게, 멀리   (묵직한 폭발)
@@ -953,7 +1018,7 @@ function newGame() {
 
   bullets = [];
   explosions = []; sparks = []; flashes = []; damageTexts = []; confetti = [];
-  shockwaves = [];
+  shockwaves = []; smoke = []; screenFlash = 0;
   charging = false; power = 0;
   lastPlayerHit = null; myLastShot = null;
   shake = 0;
@@ -1043,7 +1108,24 @@ function update() {
     const alive = [];
     for (const b of bullets) {
       b.trail.push({ x: b.x, y: b.y });
-      if (b.trail.length > 40) b.trail.shift();
+      if (b.trail.length > 55) b.trail.shift();
+      b.age++;
+      b.spin += 0.16;
+
+      // 날아가면서 연기를 뿜습니다 (오브는 더 자주·더 크게)
+      const isOrb = b.shotType === 'orb';
+      b.smokeTick++;
+      if (b.smokeTick >= (isOrb ? 2 : 4)) {
+        b.smokeTick = 0;
+        smoke.push({
+          x: b.x, y: b.y,
+          vx: (Math.random() - 0.5) * 0.3 + wind * 12,
+          vy: (Math.random() - 0.5) * 0.3 - 0.15,
+          r: isOrb ? 4 + Math.random() * 3 : 2.5 + Math.random() * 2,
+          life: 1, decay: isOrb ? 0.02 : 0.03,
+          color: isOrb ? '255,225,150' : '200,200,210',
+        });
+      }
 
       stepProjectile(b);
 
@@ -1128,8 +1210,9 @@ function updateAmbient() {
 function updateEffects() {
   for (let i = explosions.length - 1; i >= 0; i--) {
     const ex = explosions[i];
-    ex.radius += 3;
-    ex.life -= 0.05;
+    // 처음엔 확 커졌다가 점점 느려집니다 (터지는 느낌이 훨씬 살아납니다)
+    ex.radius += (ex.maxR * 1.15 - ex.radius) * 0.28;
+    ex.life -= 0.035;
     if (ex.life <= 0) explosions.splice(i, 1);
   }
   for (let i = sparks.length - 1; i >= 0; i--) {
@@ -1139,6 +1222,16 @@ function updateEffects() {
     p.vx *= 0.995;
     p.life -= (p.decay ?? 0.03);
     if (p.life <= 0) sparks.splice(i, 1);
+  }
+  // 연기는 천천히 퍼지며 위로 떠오릅니다
+  for (let i = smoke.length - 1; i >= 0; i--) {
+    const s = smoke[i];
+    s.x += s.vx; s.y += s.vy;
+    s.vy -= 0.004;          // 살짝 떠오름
+    s.vx *= 0.97; s.vy *= 0.98;
+    s.r += 0.22;            // 점점 커지며 흩어짐
+    s.life -= s.decay;
+    if (s.life <= 0) smoke.splice(i, 1);
   }
   // 충격파 고리는 빠르게 퍼지며 옅어집니다
   for (let i = shockwaves.length - 1; i >= 0; i--) {
@@ -1163,6 +1256,8 @@ function updateEffects() {
   }
   shake *= 0.82;
   if (shake < 0.3) shake = 0;
+  screenFlash *= 0.86;
+  if (screenFlash < 0.01) screenFlash = 0;
 }
 
 // ---------- 그리기 ----------
@@ -1212,45 +1307,119 @@ function draw() {
   drawTank(player);
   drawTank(enemy);
 
-  // 발사 불꽃
+  // 발사 불꽃 — 밝은 심지 + 바깥 후광 두 겹
   for (const f of flashes) {
+    const maxLife = f.maxLife ?? 7;
+    const t = f.life / maxLife;
+    const sc = f.size ?? 1;
+    const r = (5 + (maxLife - f.life) * 2.2) * sc;
+    ctx.globalAlpha = t * 0.55;
     ctx.fillStyle = f.color;
-    ctx.globalAlpha = f.life / 7;
-    ctx.beginPath();
-    ctx.arc(f.x, f.y, 4 + (7 - f.life) * 1.5, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = t;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(f.x, f.y, r * 0.42, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
   }
 
-  // 포탄
+  // 포탄이 지나간 자리의 연기 (포탄보다 먼저 그려야 뒤에 깔립니다)
+  for (const s of smoke) {
+    ctx.globalAlpha = s.life * 0.4;
+    ctx.fillStyle = `rgb(${s.color})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- 포탄 ---
   for (const b of bullets) {
-    for (let i = 0; i < b.trail.length; i++) {
-      const t = b.trail[i];
-      ctx.globalAlpha = i / b.trail.length * 0.6;
-      ctx.fillStyle = b.color;
-      ctx.fillRect(Math.round(t.x) - 1, Math.round(t.y) - 1, 2, 2);
+    const isOrb = b.shotType === 'orb';
+    const s = b.size;
+
+    // 1) 꼬리 — 점이 아니라 굵기가 변하는 띠로 그립니다
+    for (let i = 1; i < b.trail.length; i++) {
+      const t0 = b.trail[i - 1], t1 = b.trail[i];
+      const f = i / b.trail.length;              // 0=오래됨, 1=최신
+      ctx.globalAlpha = f * f * 0.75;
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = f * s * 1.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(t0.x, t0.y); ctx.lineTo(t1.x, t1.y);
+      ctx.stroke();
+    }
+    // 꼬리 안쪽의 밝은 심지
+    for (let i = 1; i < b.trail.length; i++) {
+      const t0 = b.trail[i - 1], t1 = b.trail[i];
+      const f = i / b.trail.length;
+      ctx.globalAlpha = f * f * f * 0.9;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = f * s * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(t0.x, t0.y); ctx.lineTo(t1.x, t1.y);
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    const s = b.size;
-    // 오브는 빛나는 구슬처럼 보이게 후광을 두릅니다
-    if (b.shotType === 'orb') {
-      ctx.globalAlpha = 0.35;
-      ctx.fillStyle = '#fff6c9';
-      ctx.beginPath(); ctx.arc(b.x, b.y, s * 2.4, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-    ctx.fillStyle = b.color;
-    ctx.fillRect(Math.round(b.x) - s, Math.round(b.y) - s, s * 2, s * 2);
-  }
+    ctx.lineCap = 'butt';
 
-  // 폭발 (탱크마다 색이 다름)
+    // 2) 후광 — 포탄 주위가 빛납니다 (숨쉬듯 크기가 미세하게 변함)
+    const pulse = 1 + Math.sin(b.age * 0.28) * 0.12;
+    const glowR = s * (isOrb ? 3.4 : 2.3) * pulse;
+    const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, glowR);
+    g.addColorStop(0, isOrb ? 'rgba(255,246,201,0.85)' : 'rgba(255,255,255,0.6)');
+    g.addColorStop(0.4, isOrb ? 'rgba(255,211,78,0.45)' : 'rgba(255,220,150,0.3)');
+    g.addColorStop(1, 'rgba(255,200,100,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, glowR, 0, Math.PI * 2); ctx.fill();
+
+    // 3) 포탄 본체 — 회전하는 네모(마름모)로 그려 굴러가는 느낌을 줍니다
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.spin);
+    ctx.fillStyle = b.color;
+    ctx.fillRect(-s, -s, s * 2, s * 2);
+    ctx.fillStyle = '#fff';                      // 중심의 흰 심지
+    ctx.fillRect(-s * 0.45, -s * 0.45, s * 0.9, s * 0.9);
+    ctx.restore();
+
+    // 4) 오브는 회전하는 고리를 두 개 더 두릅니다
+    if (isOrb) {
+      ctx.strokeStyle = 'rgba(255,246,201,0.8)';
+      ctx.lineWidth = 2;
+      for (let k = 0; k < 2; k++) {
+        const a = b.spin * (k ? -0.7 : 1.1);
+        ctx.save();
+        ctx.translate(b.x, b.y); ctx.rotate(a);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, s * 2.1, s * 0.75, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // 폭발 — 바깥 후광 / 불덩이 / 흰 심지 3겹으로 그립니다
   for (const ex of explosions) {
+    const gr = ctx.createRadialGradient(ex.x, ex.y, 0, ex.x, ex.y, ex.radius * 1.5);
+    gr.addColorStop(0, ex.colors[1]);
+    gr.addColorStop(0.45, ex.colors[0]);
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = ex.life * 0.55;
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius * 1.5, 0, Math.PI * 2); ctx.fill();
+
     ctx.fillStyle = ex.colors[0];
     ctx.globalAlpha = ex.life;
     ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = ex.colors[1];
-    ctx.globalAlpha = ex.life * 0.85;
+    ctx.globalAlpha = ex.life * 0.9;
     ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius * 0.55, 0, Math.PI * 2); ctx.fill();
+    // 터진 직후에만 보이는 흰 심지
+    if (ex.life > 0.65) {
+      ctx.fillStyle = '#fff';
+      ctx.globalAlpha = (ex.life - 0.65) * 2.8;
+      ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius * 0.3, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.globalAlpha = 1;
   }
   // 충격파 고리 (스톰·오브) — 폭발 뒤로 먼지가 퍼져나갑니다
@@ -1311,6 +1480,14 @@ function draw() {
     ctx.font = 'bold 14px "Courier New", monospace';
     ctx.fillText(enemy.moveTarget !== null ? '적이 이동하는 중...' : '적이 조준하는 중...', W / 2, 120);
     ctx.textAlign = 'left';
+  }
+
+  // 오브 착탄 시 화면 전체 번쩍임
+  if (screenFlash > 0) {
+    ctx.globalAlpha = screenFlash;
+    ctx.fillStyle = '#fff6c9';
+    ctx.fillRect(-20, -20, W + 40, GROUND_H + 40);
+    ctx.globalAlpha = 1;
   }
 
   drawHUD();
