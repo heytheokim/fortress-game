@@ -51,7 +51,7 @@
   <div id="help">
     <b>← →</b> 이동(연료 소모) &nbsp; <b>↑ ↓</b> 각도 &nbsp; <b>스페이스 꾹</b> 파워→발사 &nbsp;
     <b>↑↓</b> 각도 &nbsp; <b>←→</b> 이동 &nbsp; <b>스페이스 꾹</b> 발사 &nbsp;
-    <b>1 2 S</b> 발사 종류 &nbsp; <b>M</b> 처음 화면(조작법 전체)
+    <b>1 2 S</b> 발사 종류 &nbsp; <b>ESC</b> 일시정지 &nbsp; <b>M</b> 처음 화면(조작법 전체)
   </div>
 
 <script>
@@ -201,13 +201,31 @@ function later(ms, fn) { setTimeout(fn, ms); }
 const SFX = {
   fire(stats) {
     const kind = TANKS.indexOf(stats);
-    if (kind === 1) {          // 매머드 — 낮고 묵직
+    if (kind === 1) {          // 매머드 — 낮고 묵직한 대구경
       noise({ dur: 0.2, vol: 0.3, filterHz: 900, sweepTo: 200, curve: 1.2 });
       tone({ freq: 110, dur: 0.26, type: 'triangle', vol: 0.26, slide: 42, attack: 0.004 });
       later(18, () => tone({ freq: 62, dur: 0.22, type: 'sine', vol: 0.22, slide: 30 }));
     } else if (kind === 2) {   // 스톰 — 높고 가벼운 "슉"
       noise({ dur: 0.13, vol: 0.16, filterHz: 2200, sweepTo: 700, curve: 2.2 });
       tone({ freq: 330, dur: 0.16, type: 'triangle', vol: 0.17, slide: 130, attack: 0.004 });
+    } else if (kind === 3) {   // 랜스 — 화살이 공기를 가르는 날카로운 "핑"
+      noise({ dur: 0.1, vol: 0.14, filterHz: 2800, sweepTo: 1400, curve: 2.6 });
+      tone({ freq: 520, dur: 0.2, type: 'triangle', vol: 0.16, slide: 200, attack: 0.003 });
+      later(10, () => tone({ freq: 780, dur: 0.14, type: 'sine', vol: 0.09, slide: 340 }));
+    } else if (kind === 4) {   // 볼링 — 무거운 쇳덩이를 던지는 "퉁"
+      noise({ dur: 0.18, vol: 0.24, filterHz: 700, sweepTo: 220, curve: 1.4 });
+      tone({ freq: 145, dur: 0.24, type: 'triangle', vol: 0.23, slide: 70, attack: 0.006 });
+    } else if (kind === 5) {   // 스웜 — 다연장에서 여러 발이 연달아 "투투툭"
+      for (let i = 0; i < 3; i++) {
+        later(i * 42, () => {
+          tone({ freq: 300 + i * 55, dur: 0.11, type: 'triangle', vol: 0.13, slide: 150, attack: 0.003 });
+          noise({ dur: 0.08, vol: 0.1, filterHz: 1900, sweepTo: 800, curve: 2.2 });
+        });
+      }
+    } else if (kind === 6) {   // 드릴 — 회전하는 굴착탄의 "웅-웅" 떨림
+      tone({ freq: 130, dur: 0.3, type: 'triangle', vol: 0.22, slide: 58, attack: 0.006 });
+      tone({ freq: 137, dur: 0.3, type: 'triangle', vol: 0.16, slide: 62, attack: 0.006, detune: 22 });
+      noise({ dur: 0.22, vol: 0.2, filterHz: 1100, sweepTo: 330, curve: 1.5 });
     } else {                   // 레이븐 — 표준
       noise({ dur: 0.15, vol: 0.22, filterHz: 1500, sweepTo: 400, curve: 1.8 });
       tone({ freq: 190, dur: 0.2, type: 'triangle', vol: 0.21, slide: 70, attack: 0.004 });
@@ -223,6 +241,24 @@ const SFX = {
     } else if (kind === 2) {   // 스톰 — 넓게 퍼지는 "쏴아"
       noise({ dur: 0.55, vol: 0.3, filterHz: 1800, sweepTo: 320, curve: 0.85 });
       tone({ freq: 128, dur: 0.3, type: 'sine', vol: 0.19, slide: 55, attack: 0.006 });
+    } else if (kind === 3) {   // 랜스 — 관통음이 섞인 짧고 단단한 폭발
+      noise({ dur: 0.26, vol: 0.26, filterHz: 1700, sweepTo: 400, curve: 1.9 });
+      tone({ freq: 150, dur: 0.26, type: 'sine', vol: 0.24, slide: 52, attack: 0.003 });
+      later(20, () => tone({ freq: 420, dur: 0.12, type: 'triangle', vol: 0.08, slide: 180 }));
+    } else if (kind === 4) {   // 볼링 — 쇳덩이가 터지는 둔탁한 소리
+      noise({ dur: 0.4, vol: 0.32, filterHz: 900, sweepTo: 160, curve: 1.2 });
+      tone({ freq: 92, dur: 0.4, type: 'sine', vol: 0.28, slide: 30, attack: 0.004 });
+    } else if (kind === 5) {   // 스웜 — 작은 폭발이 잘게 겹침
+      for (let i = 0; i < 2; i++) {
+        later(i * 55, () => {
+          noise({ dur: 0.22, vol: 0.2, filterHz: 1600, sweepTo: 420, curve: 1.7 });
+          tone({ freq: 175 - i * 25, dur: 0.2, type: 'sine', vol: 0.17, slide: 60, attack: 0.004 });
+        });
+      }
+    } else if (kind === 6) {   // 드릴 — 땅을 뚫고 들어가 안에서 터지는 먹먹한 소리
+      noise({ dur: 0.6, vol: 0.32, filterHz: 620, sweepTo: 110, curve: 1.0 });
+      tone({ freq: 84, dur: 0.55, type: 'sine', vol: 0.3, slide: 24, attack: 0.008 });
+      later(70, () => noise({ dur: 0.3, vol: 0.16, filterHz: 420, sweepTo: 130, curve: 1.3 }));
     } else {                   // 레이븐 — 표준
       noise({ dur: 0.34, vol: 0.3, filterHz: 1300, sweepTo: 200, curve: 1.5 });
       tone({ freq: 98, dur: 0.34, type: 'sine', vol: 0.26, slide: 34, attack: 0.004 });
@@ -1268,6 +1304,7 @@ let charging = false;
 let power = 0;
 let selShot = 'single';    // 지금 고른 발사 종류 (1 / 2 / S 키로 변경)
 let resetArmed = false;    // 전적 초기화를 한 번 눌러 예약한 상태
+let paused = false;        // ESC로 일시정지 (턴 시간·포탄·AI가 전부 멈춥니다)
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
@@ -1275,6 +1312,22 @@ window.addEventListener('keydown', (e) => {
 
   // 음소거는 S가 오브 발사에 쓰이므로 X 키로 옮겼습니다
   if (e.code === 'KeyX') { toggleMute(); if (!muted) SFX.click(); return; }
+
+  // --- 일시정지 (게임 중에만) ---
+  if (e.code === 'Escape' && phase !== 'menu' && phase !== 'gameover') {
+    paused = !paused;
+    if (paused) {
+      // 멈추는 순간 충전을 취소합니다. 안 그러면 멈춘 채로 파워를 재는
+      // 편법이 되고, 소리도 계속 울립니다.
+      charging = false; power = 0;
+      stopChargeSound();
+      for (const k in keys) keys[k] = false;
+    }
+    SFX.click();
+    return;
+  }
+  // 멈춰 있는 동안에는 ESC(위에서 처리)와 음소거 말고는 아무 키도 안 먹습니다
+  if (paused) return;
 
   // --- 메뉴 화면 조작 ---
   if (phase === 'menu') {
@@ -1354,6 +1407,8 @@ window.addEventListener('keyup', (e) => {
 window.addEventListener('blur', () => {
   charging = false; power = 0;
   stopChargeSound();
+  // 다른 창으로 갔다 오면 턴 시간이 다 날아가 있으므로 자동으로 멈춥니다
+  if (phase !== 'menu' && phase !== 'gameover') paused = true;
   for (const k in keys) keys[k] = false;
   // 포탄 소리는 멈추지 않습니다 — 창을 벗어나도 포탄은 계속 날아가는 중이므로
 });
@@ -1433,7 +1488,27 @@ function aiDecideShot() {
   // 시뮬레이션이 이걸 모르므로(평균 73px 어긋남) 조준점을 그만큼 당겨줍니다.
   const clusterBias = enemy.stats.proj === 'cluster' ? 62 : 0;
   const dir = Math.sign(player.x - enemy.x);   // 적은 보통 왼쪽으로 쏩니다
-  const targetX = player.x + jitter - dir * clusterBias;
+
+  // --- 발밑 파기 전략 ---
+  // 플레이어가 높은 지대에 서 있으면, 정통으로 맞히는 대신 발밑을 파서
+  // 떨어뜨리는 게 이득입니다. 지형을 깊이 파는 드릴이 특히 잘합니다.
+  // 조준이 어느 정도 잡힌 뒤에만 시도합니다(초반엔 어차피 빗나가므로).
+  let digTarget = 0;
+  if (errorSize < 70) {
+    const px = Math.round(player.x);
+    // 발밑에서 양옆 22px 지점이 지금 서 있는 곳보다 얼마나 낮은지
+    const here = terrain[px] ?? GROUND_H;
+    const side = Math.min(terrain[Math.max(0, px - 40)] ?? GROUND_H,
+                          terrain[Math.min(W - 1, px + 40)] ?? GROUND_H);
+    const perch = side - here;          // 양수면 플레이어가 솟은 자리에 있음
+    const isDigger = enemy.stats.proj === 'drill';
+    if (perch > (isDigger ? 18 : 34) && Math.random() < (isDigger ? 0.55 : 0.25)) {
+      // 몸통 옆을 노려 발판을 무너뜨립니다
+      digTarget = (Math.random() < 0.5 ? -1 : 1) * 20;
+    }
+  }
+
+  const targetX = player.x + jitter - dir * clusterBias + digTarget;
 
   let best = null;
   for (let a = 100; a <= 170; a += 3) {
@@ -1570,6 +1645,7 @@ function newGame() {
   rollWind();
 
   matchStats = newMatchStats();
+  paused = false;
   turn = 'player';
   phase = 'aiming';
   winner = null;
@@ -1584,6 +1660,7 @@ function newGame() {
 function update() {
   // 메뉴에서도 안내 문구는 사라져야 하므로 타이머만 돌립니다
   if (phase === 'menu') { if (messageTimer > 0) messageTimer--; return; }
+  if (paused) return;      // 일시정지: 턴 시간·포탄·AI가 전부 멈춥니다
 
   if (messageTimer > 0) messageTimer--;
   updateAmbient();
@@ -2159,6 +2236,7 @@ function draw() {
 
   drawHUD();
 
+  if (paused && phase !== 'gameover') drawPaused();
   if (phase === 'gameover') drawGameOver();
 
   ctx.restore();
@@ -2969,6 +3047,7 @@ function drawControlsPanel() {
     ['2', '두 발 (넓게)'],
     ['S', '오브 — 게이지 100 필요'],
     ['', ''],
+    ['ESC', '일시정지'],
     ['H', '지난 발사 힌트'],
     ['X', '소리 끄기/켜기'],
     ['R', '같은 조건 재대결'],
@@ -3022,6 +3101,35 @@ function drawMiniTank(type, cx, cy, color, scale = 1) {
   ctx.restore();
 }
 
+
+// ---------- 일시정지 화면 ----------
+function drawPaused() {
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(-20, -20, W + 40, GROUND_H + 40);
+
+  const cx = W / 2, cy = GROUND_H / 2;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 44px "Courier New", monospace';
+  ctx.fillText('일시정지', cx, cy - 20);
+
+  ctx.fillStyle = '#e8f0fa';
+  ctx.font = 'bold 15px "Courier New", monospace';
+  ctx.fillText('ESC 를 눌러 계속하기', cx, cy + 24);
+
+  ctx.fillStyle = '#7e8fa5';
+  ctx.font = '12px "Courier New", monospace';
+  ctx.fillText('R 재대결   ·   M 처음 화면   ·   X 음소거', cx, cy + 54);
+
+  // 지금 상황 요약 (멈춘 김에 확인하라고)
+  if (matchStats) {
+    const acc2 = matchStats.shots > 0 ? Math.round(100 * matchStats.hits / matchStats.shots) : 0;
+    ctx.fillStyle = '#6d7a8f';
+    ctx.font = '11px "Courier New", monospace';
+    ctx.fillText(`내 체력 ${player.hp} · 적 체력 ${enemy.hp} · 명중률 ${acc2}%`, cx, cy + 84);
+  }
+  ctx.textAlign = 'left';
+}
 
 // ---------- 게임 종료 화면 ----------
 function drawGameOver() {
