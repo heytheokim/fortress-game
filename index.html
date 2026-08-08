@@ -45,7 +45,7 @@
 
   <div id="help">
     <b>← →</b> 이동(연료 소모) &nbsp; <b>↑ ↓</b> 각도 &nbsp; <b>스페이스 꾹</b> 파워→발사 &nbsp;
-    <b>H</b> 지난발사 표시 &nbsp; <b>S</b> 음소거 &nbsp; <b>R</b> 재대결 &nbsp; <b>M</b> 처음 화면
+    <b>1 2</b> 발사 종류 &nbsp; <b>S</b> 오브(필살기) &nbsp; <b>H</b> 힌트 &nbsp; <b>X</b> 음소거 &nbsp; <b>R</b> 재대결 &nbsp; <b>M</b> 처음
   </div>
 
 <script>
@@ -74,6 +74,14 @@ const CONFIG = {
 
   fuelMax: 70,          // 한 턴에 움직일 수 있는 거리(픽셀)
   moveSpeed: 1.2,       // 이동 속도 (프레임당 픽셀)
+
+  // 오브(필살기) 게이지: 100이 되면 쓸 수 있습니다.
+  // 20판씩 돌려 맞춘 값입니다. 더 빠르게(14/22/10) 두면 판당 오브가 2.3회씩
+  // 나와서 판이 1.6분으로 짧아지고 오브가 특별하지 않게 됩니다.
+  gaugeMax: 100,
+  gaugePerTurn: 5,      // 턴이 돌아올 때마다 자동으로 차는 양
+  gaugePerHit: 11,      // 적을 맞히면 추가로 차는 양 (잘 맞힐수록 빨리 모임)
+  gaugeWhenHurt: 4,     // 내가 맞아도 조금 찹니다 (지고 있어도 역전 기회)
 
   selfDamage: 0.5,      // 자기 포탄에 자기가 맞으면 데미지 절반 (실수 한 번에 판이 뒤집히지 않게)
   fallDamage: 0.15,     // 대포가 떨어질 때 1px당 데미지
@@ -221,6 +229,30 @@ const SFX = {
   land()  {                                          // 대포가 쿵 떨어질 때
     noise({ dur: 0.22, vol: 0.22, filterHz: 500, sweepTo: 120, curve: 1.4 });
     tone({ freq: 64, dur: 0.2, type: 'sine', vol: 0.2, slide: 36, attack: 0.004 });
+  },
+  // --- 오브(필살기) 전용 소리 ---
+  // 발사: 낮은 데서 높은 쪽으로 솟구치는 "차오르는" 느낌
+  orb(stats) {
+    tone({ freq: 160, dur: 0.4, type: 'triangle', vol: 0.2, slide: 620, attack: 0.02 });
+    tone({ freq: 240, dur: 0.42, type: 'sine', vol: 0.14, slide: 930, attack: 0.03, detune: 8 });
+    noise({ dur: 0.3, vol: 0.2, filterHz: 1600, sweepTo: 500, curve: 1.2 });
+  },
+  // 착탄: 묵직한 폭발 + 뒤따라 울리는 여운
+  orbHit(stats) {
+    noise({ dur: 0.75, vol: 0.36, filterHz: 1500, sweepTo: 110, curve: 0.9 });
+    tone({ freq: 88, dur: 0.7, type: 'sine', vol: 0.34, slide: 24, attack: 0.004 });
+    later(60,  () => tone({ freq: 62, dur: 0.6, type: 'sine', vol: 0.24, slide: 20 }));
+    later(140, () => tone({ freq: 44, dur: 0.5, type: 'sine', vol: 0.16, slide: 18 }));
+  },
+  // 오브 사용 준비 — 반짝이는 상승음
+  orbReady() {
+    [523, 784, 1047].forEach((f, i) =>
+      later(i * 55, () => tone({ freq: f, dur: 0.18, type: 'triangle', vol: 0.13, attack: 0.006 })));
+  },
+  // 게이지가 막 100이 됐을 때
+  gaugeFull() {
+    [659, 880].forEach((f, i) =>
+      later(i * 90, () => tone({ freq: f, dur: 0.22, type: 'triangle', vol: 0.14, attack: 0.01 })));
   },
   click() { tone({ freq: 620, dur: 0.05, type: 'triangle', vol: 0.09, attack: 0.003 }); },
   tick()  { tone({ freq: 720, dur: 0.07, type: 'triangle', vol: 0.11, attack: 0.004 }); },
@@ -406,12 +438,14 @@ function generateTerrain() {
 const player = {
   x: 110, y: 0, angle: 45, hp: CONFIG.maxHp,
   fuel: CONFIG.fuelMax,
+  gauge: 0,             // 오브 게이지 (100이면 필살기 사용 가능)
   stats: TANKS[0],
   name: '나',
 };
 const enemy = {
   x: 690, y: 0, angle: 135, hp: CONFIG.maxHp,
   fuel: CONFIG.fuelMax,
+  gauge: 0,
   stats: TANKS[1],
   name: '적',
   moveTarget: null,     // AI가 이번 턴에 이동할 목적지 (없으면 안 움직임)
@@ -424,8 +458,26 @@ function placeTanks() {
   enemy.y  = terrain[Math.round(enemy.x)];
 }
 
+// ---------- 발사 종류 (원조 포트리스의 1번·2번·오브) ----------
+// 1번(기본샷): 포탄 하나. 언제든 쏠 수 있습니다.
+// 2번(더블샷): 각도를 살짝 벌린 포탄 두 발. 하나는 빗나가도 하나가 맞을 확률이 있어
+//              "대충 근처"를 노릴 때 유리하지만, 발당 위력은 약합니다.
+// 오브(SS샷) : 게이지를 가득 모아야 쓰는 필살기. 강력한 한 방 + 넓은 폭발.
+const SHOTS = {
+  single: { key: '1', name: '1번', dmgMul: 1.0,  radiusMul: 1.0,  count: 1, spread: 0,   gauge: 0   },
+  // 퍼짐·위력은 40판씩 시뮬레이션해 맞춘 값입니다.
+  // 정확히 조준했을 땐 1번보다 약간 손해(27.5 vs 30.8), 빗나갔을 땐 이득(12.9 vs 10.7)이
+  // 되도록 맞췄습니다 — 그래야 "대충 근처를 노릴 때 쓰는 카드"가 됩니다.
+  double: { key: '2', name: '2번', dmgMul: 0.72, radiusMul: 0.85, count: 2, spread: 1.2, gauge: 0   },
+  // 위력 1.45배 + 상한 82. 상한이 없으면 매머드 오브가 100 데미지라
+  // 풀피 상대를 한 방에 죽여서 "게이지만 모으면 이기는" 게임이 됩니다.
+  orb:    { key: 'S', name: '오브', dmgMul: 1.45, radiusMul: 1.5, count: 1, spread: 0,   gauge: 100,
+            dmgCap: 82 },
+};
+
 // ---------- 포탄 ----------
-let bullet = null;
+// 더블샷 때문에 포탄이 동시에 여러 개 날아갈 수 있어 배열로 관리합니다.
+let bullets = [];
 
 // 포탄을 한 스텝(1/120초)만큼 움직이는 함수.
 // 실제 게임의 포탄과 AI가 머릿속으로 굴려보는 포탄이 반드시 똑같이 날아가야 하므로
@@ -437,28 +489,41 @@ function stepProjectile(b) {
   b.vx += wind;              // 바람이 옆으로 밀어냄
 }
 
-function fire(shooter, angle, powerVal, who) {
-  const rad = angle * Math.PI / 180;
-  const speed = powerVal * CONFIG.powerScale;
+function fire(shooter, angle, powerVal, who, shotType = 'single') {
+  const shot = SHOTS[shotType];
   const stats = who === 'player' ? player.stats : enemy.stats;
+  const speed = powerVal * CONFIG.powerScale;
 
-  bullet = {
-    x: shooter.x + Math.cos(rad) * 22,
-    y: shooter.y - 14 - Math.sin(rad) * 22,
-    vx: Math.cos(rad) * speed,
-    vy: -Math.sin(rad) * speed,
-    trail: [], who,
-    color: stats.trail, size: stats.shell,
-  };
+  bullets = [];
+  // count가 2면 각도를 ±spread만큼 벌려 두 발을 쏩니다
+  for (let i = 0; i < shot.count; i++) {
+    const offset = shot.count === 1 ? 0
+                 : (i - (shot.count - 1) / 2) * shot.spread * 2;
+    const rad = (angle + offset) * Math.PI / 180;
+    bullets.push({
+      x: shooter.x + Math.cos(rad) * 22,
+      y: shooter.y - 14 - Math.sin(rad) * 22,
+      vx: Math.cos(rad) * speed,
+      vy: -Math.sin(rad) * speed,
+      trail: [], who, shotType,
+      color: shotType === 'orb' ? '#ffe680' : stats.trail,
+      size: shotType === 'orb' ? stats.shell + 3 : stats.shell,
+    });
+  }
 
   // 발사 순간의 불꽃(머즐 플래시)
-  flashes.push({ x: bullet.x, y: bullet.y, life: 7, color: stats.trail });
-  SFX.fire(stats);
+  const b0 = bullets[0];
+  flashes.push({ x: b0.x, y: b0.y, life: shotType === 'orb' ? 12 : 7,
+                 color: shotType === 'orb' ? '#ffe680' : stats.trail });
+  if (shotType === 'orb') SFX.orb(stats); else SFX.fire(stats);
   startFlySound();     // 포탄이 날아가는 동안 "쉬이익" 소리가 이어집니다
 
   // 내 발사 기록 (HUD 힌트용)
   if (who === 'player') {
-    myLastShot = { angle: Math.round(angle), power: Math.round(powerVal) };
+    myLastShot = { angle: Math.round(angle), power: Math.round(powerVal), shot: shotType };
+    if (shotType === 'orb') player.gauge = 0;      // 오브를 쓰면 게이지 소진
+  } else if (shotType === 'orb') {
+    enemy.gauge = 0;
   }
   phase = 'flying';
 }
@@ -470,12 +535,21 @@ let flashes = [];       // 발사 불꽃
 let damageTexts = [];
 let confetti = [];      // 승리 폭죽
 
-function createExplosion(x, y, who) {
-  const stats = who === 'player' ? player.stats : enemy.stats;
+function createExplosion(x, y, who, shotType = 'single') {
+  const base = who === 'player' ? player.stats : enemy.stats;
+  const shot = SHOTS[shotType];
+  // 발사 종류에 따라 위력과 폭발 크기가 달라집니다 (2번은 약하게, 오브는 강하게)
+  const stats = {
+    ...base,
+    dmg: base.dmg * shot.dmgMul,
+    radius: base.radius * shot.radiusMul,
+    dmgCap: shot.dmgCap,
+    expl: shotType === 'orb' ? ['#ffd34e', '#fff6c9'] : base.expl,
+  };
 
   explosions.push({ x, y, radius: 0, life: 1, maxR: stats.radius, colors: stats.expl });
-  shake = stats.shake;
-  SFX.explode(stats);
+  shake = base.shake * (shotType === 'orb' ? 1.8 : shot.dmgMul);
+  if (shotType === 'orb') SFX.orbHit(base); else SFX.explode(base);
 
   // 파편이 사방으로 튐
   for (let i = 0; i < 16; i++) {
@@ -512,6 +586,15 @@ function createExplosion(x, y, who) {
   placeTanks();
 }
 
+// 게이지를 올리고, 방금 100이 찼으면 알려줍니다
+function addGauge(tank, amount) {
+  const before = tank.gauge;
+  tank.gauge = Math.min(CONFIG.gaugeMax, tank.gauge + amount);
+  if (before < CONFIG.gaugeMax && tank.gauge >= CONFIG.gaugeMax) {
+    if (tank === player) { SFX.gaugeFull(); showMessage('오브 준비 완료! (S)', 70); }
+  }
+}
+
 function applyDamage(tank, ex, ey, stats, isSelf = false) {
   const dx = tank.x - ex;
   const dy = (tank.y - 8) - ey;
@@ -520,11 +603,19 @@ function applyDamage(tank, ex, ey, stats, isSelf = false) {
 
   const ratio = dist / stats.radius;
   let dmg = Math.round(stats.dmg * (1 - ratio) * (1 - ratio * 0.5));
+  if (stats.dmgCap) dmg = Math.min(dmg, stats.dmgCap);   // 오브 한 방 즉사 방지
   if (isSelf) dmg = Math.round(dmg * CONFIG.selfDamage);
   if (dmg > 0) {
     tank.hp = Math.max(0, tank.hp - dmg);
     damageTexts.push({ x: tank.x, y: tank.y - 30, value: dmg, life: 1, self: isSelf });
     if (tank === player) SFX.hit();     // 내가 맞았을 때만 경고음
+
+    // 오브 게이지: 맞힌 쪽은 많이, 맞은 쪽도 조금 찹니다 (지고 있어도 역전 기회)
+    if (!isSelf) {
+      const attacker = tank === player ? enemy : player;
+      addGauge(attacker, CONFIG.gaugePerHit);
+    }
+    addGauge(tank, CONFIG.gaugeWhenHurt);
   }
 }
 
@@ -563,12 +654,14 @@ function initDeco() {
 const keys = {};
 let charging = false;
 let power = 0;
+let selShot = 'single';    // 지금 고른 발사 종류 (1 / 2 / S 키로 변경)
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
   initAudio();                       // 첫 키 입력에 오디오를 깨웁니다
 
-  if (e.code === 'KeyS') { toggleMute(); if (!muted) SFX.click(); return; }
+  // 음소거는 S가 오브 발사에 쓰이므로 X 키로 옮겼습니다
+  if (e.code === 'KeyX') { toggleMute(); if (!muted) SFX.click(); return; }
 
   // --- 메뉴 화면 조작 ---
   if (phase === 'menu') {
@@ -598,9 +691,19 @@ window.addEventListener('keydown', (e) => {
   }
   keys[e.code] = true;
 
+  // --- 발사 종류 고르기 (원조 포트리스의 1번·2번·SS) ---
+  if (phase === 'aiming' && turn === 'player' && !charging) {
+    if (e.code === 'Digit1') { selShot = 'single'; SFX.click(); }
+    if (e.code === 'Digit2') { selShot = 'double'; SFX.click(); }
+    if (e.code === 'KeyS') {
+      if (player.gauge >= CONFIG.gaugeMax) { selShot = 'orb'; SFX.orbReady(); }
+      else showMessage('오브 게이지가 부족합니다', 60);
+    }
+  }
+
   if (e.code === 'KeyH') showHint = !showHint;
   if (e.code === 'KeyR') newGame();               // 같은 탱크·맵으로 재대결
-  if (e.code === 'KeyM') { phase = 'menu'; bullet = null; stopChargeSound(); stopFlySound(); }
+  if (e.code === 'KeyM') { phase = 'menu'; bullets = []; stopChargeSound(); stopFlySound(); }
 });
 
 window.addEventListener('keyup', (e) => {
@@ -609,7 +712,10 @@ window.addEventListener('keyup', (e) => {
     if (charging) {
       charging = false;
       stopChargeSound();
-      fire(player, player.angle, power, 'player');
+      // 오브를 골라뒀는데 게이지가 없으면(전 턴에 써버린 경우) 기본샷으로 나갑니다
+      const use = (selShot === 'orb' && player.gauge < CONFIG.gaugeMax) ? 'single' : selShot;
+      fire(player, player.angle, power, 'player', use);
+      if (use === 'orb') selShot = 'single';    // 오브는 한 번 쓰면 기본샷으로 돌아옴
       power = 0;
     }
     return;
@@ -707,7 +813,17 @@ function aiDecideShot() {
   enemy.shotCount++;
   enemy.lastAngle = best.angle;
   enemy.lastPower = finalPower;
-  return { angle: best.angle, power: finalPower };
+
+  // AI도 발사 종류를 고릅니다.
+  // 오브가 준비되면 씁니다. 아직 조준이 부정확한 초반에는 2번(더블샷)으로
+  // 넓게 노리고, 조준이 잡히면 1번으로 정확히 때립니다 — 사람이 하는 방식과 같습니다.
+  let shotType = 'single';
+  if (enemy.gauge >= CONFIG.gaugeMax) {
+    shotType = 'orb';
+  } else if (errorSize > 90) {
+    shotType = 'double';
+  }
+  return { angle: best.angle, power: finalPower, shotType };
 }
 
 // ---------- 턴 ----------
@@ -726,6 +842,7 @@ function nextTurn() {
     turn = 'enemy';
     phase = 'aiThink';
     aiTimer = CONFIG.aiThinkTime;
+    addGauge(enemy, CONFIG.gaugePerTurn);
     // AI도 절반 확률로 자리를 옮깁니다 (같은 자리 싸움 방지).
     // 플레이어와 똑같이 연료 한도(fuelMax) 안에서만 움직입니다.
     enemy.fuel = CONFIG.fuelMax;
@@ -740,6 +857,7 @@ function nextTurn() {
     turn = 'player';
     phase = 'aiming';
     player.fuel = CONFIG.fuelMax;   // 연료는 매 턴 가득 찹니다
+    addGauge(player, CONFIG.gaugePerTurn);
     turnTimer = CONFIG.turnTime * 120;
     lastTickSecond = -1;
     showMessage('내 차례', 50);
@@ -779,13 +897,15 @@ function newGame() {
   initDeco();
 
   player.hp = CONFIG.maxHp; player.x = 110; player.angle = 45;
-  player.fuel = CONFIG.fuelMax;
+  player.fuel = CONFIG.fuelMax; player.gauge = 0;
   enemy.hp = CONFIG.maxHp; enemy.x = 690; enemy.angle = 135;
+  enemy.fuel = CONFIG.fuelMax; enemy.gauge = 0;
+  selShot = 'single';
   enemy.lastPower = null; enemy.lastAngle = null;
   enemy.shotCount = 0; enemy.moveTarget = null;
   placeTanks();
 
-  bullet = null;
+  bullets = [];
   explosions = []; sparks = []; flashes = []; damageTexts = []; confetti = [];
   charging = false; power = 0;
   lastPlayerHit = null; myLastShot = null;
@@ -861,37 +981,50 @@ function update() {
       if (aiTimer <= 0) {
         const shot = aiDecideShot();
         enemy.angle = shot.angle;
-        fire(enemy, shot.angle, shot.power, 'enemy');
+        fire(enemy, shot.angle, shot.power, 'enemy', shot.shotType);
       }
     }
   }
 
-  // --- 포탄 ---
-  if (bullet) {
-    bullet.trail.push({ x: bullet.x, y: bullet.y });
-    if (bullet.trail.length > 40) bullet.trail.shift();
+  // --- 포탄 (더블샷이면 동시에 두 발이 날아갑니다) ---
+  if (bullets.length > 0) {
+    const alive = [];
+    for (const b of bullets) {
+      b.trail.push({ x: b.x, y: b.y });
+      if (b.trail.length > 40) b.trail.shift();
 
-    stepProjectile(bullet);
-    updateFlySound(bullet);
+      stepProjectile(b);
 
-    let hit = false;
-    for (const tank of [player, enemy]) {
-      const dx = bullet.x - tank.x, dy = bullet.y - (tank.y - 10);
-      if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) {
-        createExplosion(bullet.x, bullet.y, bullet.who);
-        hit = true; break;
+      let done = false;
+      // 대포에 직격
+      for (const tank of [player, enemy]) {
+        const dx = b.x - tank.x, dy = b.y - (tank.y - 10);
+        if (Math.sqrt(dx * dx + dy * dy) < CONFIG.hitRadius) {
+          createExplosion(b.x, b.y, b.who, b.shotType);
+          done = true; break;
+        }
       }
-    }
-    if (!hit && (bullet.x < -50 || bullet.x > W + 50 || bullet.y > GROUND_H + 140)) {
-      bullet = null; stopFlySound(); nextTurn();
-    } else if (!hit && bullet.y >= 0) {
-      const gx = Math.round(bullet.x);
-      if (gx >= 0 && gx < W && bullet.y >= terrain[gx]) {
-        createExplosion(bullet.x, bullet.y, bullet.who);
-        hit = true;
+      // 화면 밖으로 사라짐 (터지지 않고 그냥 없어집니다)
+      if (!done && (b.x < -50 || b.x > W + 50 || b.y > GROUND_H + 140)) {
+        done = true;
+      } else if (!done && b.y >= 0) {
+        // 땅에 착탄
+        const gx = Math.round(b.x);
+        if (gx >= 0 && gx < W && b.y >= terrain[gx]) {
+          createExplosion(b.x, b.y, b.who, b.shotType);
+          done = true;
+        }
       }
+      if (!done) alive.push(b);
     }
-    if (hit) { bullet = null; stopFlySound(); nextTurn(); }
+    bullets = alive;
+
+    if (bullets.length > 0) {
+      updateFlySound(bullets[0]);      // 소리는 대표로 첫 번째 포탄을 따라갑니다
+    } else {
+      stopFlySound();
+      nextTurn();                      // 모든 포탄이 사라져야 턴이 넘어갑니다
+    }
   }
 
   updateEffects();
@@ -1011,17 +1144,24 @@ function draw() {
   }
 
   // 포탄
-  if (bullet) {
-    for (let i = 0; i < bullet.trail.length; i++) {
-      const t = bullet.trail[i];
-      ctx.globalAlpha = i / bullet.trail.length * 0.6;
-      ctx.fillStyle = bullet.color;
+  for (const b of bullets) {
+    for (let i = 0; i < b.trail.length; i++) {
+      const t = b.trail[i];
+      ctx.globalAlpha = i / b.trail.length * 0.6;
+      ctx.fillStyle = b.color;
       ctx.fillRect(Math.round(t.x) - 1, Math.round(t.y) - 1, 2, 2);
     }
     ctx.globalAlpha = 1;
-    ctx.fillStyle = bullet.color;
-    const s = bullet.size;
-    ctx.fillRect(Math.round(bullet.x) - s, Math.round(bullet.y) - s, s * 2, s * 2);
+    const s = b.size;
+    // 오브는 빛나는 구슬처럼 보이게 후광을 두릅니다
+    if (b.shotType === 'orb') {
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = '#fff6c9';
+      ctx.beginPath(); ctx.arc(b.x, b.y, s * 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = b.color;
+    ctx.fillRect(Math.round(b.x) - s, Math.round(b.y) - s, s * 2, s * 2);
   }
 
   // 폭발 (탱크마다 색이 다름)
@@ -1200,8 +1340,14 @@ function drawHUD() {
   bar(14, HUD_Y + 28, 150, 12, player.hp / CONFIG.maxHp, hpColor(player.hp), player.stats.color);
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '10px "Courier New", monospace';
-  ctx.fillText('연료', 14, HUD_Y + 56);
-  bar(46, HUD_Y + 48, 118, 8, player.fuel / CONFIG.fuelMax, '#e8c14a', '#555');
+  ctx.fillText('연료', 14, HUD_Y + 54);
+  bar(46, HUD_Y + 46, 118, 7, player.fuel / CONFIG.fuelMax, '#e8c14a', '#555');
+  // 오브 게이지 — 가득 차면 금빛으로 반짝입니다
+  const gFull = player.gauge >= CONFIG.gaugeMax;
+  ctx.fillStyle = gFull ? '#ffd700' : '#8fa3b8';
+  ctx.fillText('오브', 14, HUD_Y + 68);
+  bar(46, HUD_Y + 60, 118, 7, player.gauge / CONFIG.gaugeMax,
+      gFull ? (Math.floor(Date.now() / 250) % 2 ? '#ffd700' : '#fff3b0') : '#7b5cff', '#555');
 
   // === 각도 + 지난 발사 (중앙 왼쪽) ===
   ctx.fillStyle = '#8fa3b8';
@@ -1210,36 +1356,63 @@ function drawHUD() {
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 26px "Courier New", monospace';
   ctx.fillText(`${Math.round(player.angle)}°`, 200, HUD_Y + 44);
-  ctx.font = '10px "Courier New", monospace';
+  ctx.font = '9px "Courier New", monospace';
   if (showHint && myLastShot) {
     ctx.fillStyle = '#c9b46a';
-    ctx.fillText(`지난발사 ${myLastShot.angle}° · ${myLastShot.power}%`, 200, HUD_Y + 62);
+    ctx.fillText(`지난 ${myLastShot.angle}° ${myLastShot.power}%`, 200, HUD_Y + 68);
   } else if (showHint) {
     ctx.fillStyle = '#556377';
-    ctx.fillText('아직 발사 전', 200, HUD_Y + 62);
+    ctx.fillText('아직 발사 전', 200, HUD_Y + 68);
   } else {
     ctx.fillStyle = '#556377';
-    ctx.fillText('힌트 꺼짐 (H)', 200, HUD_Y + 62);
+    ctx.fillText('힌트 꺼짐 (H)', 200, HUD_Y + 68);
+  }
+
+  // === 발사 종류 선택 (1 / 2 / 오브) ===
+  const shotList = [
+    { id: 'single', label: '1', key: 'Digit1' },
+    { id: 'double', label: '2', key: 'Digit2' },
+    { id: 'orb',    label: 'S', key: 'KeyS'   },
+  ];
+  ctx.fillStyle = '#8fa3b8';
+  ctx.font = '11px "Courier New", monospace';
+  ctx.fillText('발사', 276, HUD_Y + 18);
+  for (let i = 0; i < shotList.length; i++) {
+    const s = shotList[i];
+    const bx = 276 + i * 30, by = HUD_Y + 26;
+    const on = selShot === s.id;
+    const locked = s.id === 'orb' && player.gauge < CONFIG.gaugeMax;
+    ctx.fillStyle = on ? 'rgba(255,215,0,0.22)' : 'rgba(255,255,255,0.05)';
+    ctx.fillRect(bx, by, 26, 24);
+    ctx.strokeStyle = on ? '#ffd700' : locked ? '#3a4a63' : '#5d7089';
+    ctx.lineWidth = on ? 2 : 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, 25, 23);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = locked ? '#4a5568' : on ? '#ffd700' : '#a8b8cc';
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.fillText(s.label, bx + 13, by + 17);
+    ctx.textAlign = 'left';
   }
 
   // === 파워 게이지 (중앙) ===
+  const PW_X = 372, PW_W = 200;   // 발사 종류 칸(276~354) 오른쪽에 놓습니다
   ctx.fillStyle = '#8fa3b8';
   ctx.font = '11px "Courier New", monospace';
-  ctx.fillText('파워', 340, HUD_Y + 18);
+  ctx.fillText('파워', PW_X, HUD_Y + 18);
   const showing = charging ? power : 0;
   const ratio = showing / CONFIG.powerMax;
-  bar(340, HUD_Y + 26, 240, 20, ratio,
+  bar(PW_X, HUD_Y + 26, PW_W, 20, ratio,
       ratio > 0.85 ? '#f44336' : ratio > 0.6 ? '#ffc107' : '#4caf50', '#3a4a63');
   // 눈금 (10% 간격)
   ctx.fillStyle = 'rgba(255,255,255,0.25)';
-  for (let i = 1; i < 10; i++) ctx.fillRect(340 + i * 24, HUD_Y + 27, 1, 18);
+  for (let i = 1; i < 10; i++) ctx.fillRect(PW_X + i * (PW_W / 10), HUD_Y + 27, 1, 18);
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 13px "Courier New", monospace';
-  ctx.fillText(`${Math.round(showing)}%`, 340 + 246, HUD_Y + 41);
+  ctx.fillText(`${Math.round(showing)}%`, PW_X + PW_W + 6, HUD_Y + 41);
 
   // 지난 발사 파워 위치 표시 (게이지 위 작은 삼각형)
   if (showHint && myLastShot) {
-    const hx = 340 + 240 * (myLastShot.power / CONFIG.powerMax);
+    const hx = PW_X + PW_W * (myLastShot.power / CONFIG.powerMax);
     ctx.fillStyle = '#c9b46a';
     ctx.beginPath();
     ctx.moveTo(hx, HUD_Y + 24);
@@ -1274,12 +1447,21 @@ function drawHUD() {
   ctx.fillText(`적 · ${enemy.stats.name}`, W - 14, HUD_Y + 20);
   ctx.textAlign = 'left';
   bar(W - 164, HUD_Y + 28, 150, 12, enemy.hp / CONFIG.maxHp, hpColor(enemy.hp), '#f56b6b');
+  // 적 오브 게이지 — 가득 차면 곧 필살기가 날아온다는 경고입니다
+  const eFull = enemy.gauge >= CONFIG.gaugeMax;
+  ctx.textAlign = 'right';
+  ctx.font = '9px "Courier New", monospace';
+  ctx.fillStyle = eFull ? '#ffd700' : '#6d7a8f';
+  ctx.fillText(eFull ? '오브 준비됨!' : '오브', W - 168, HUD_Y + 52);
+  ctx.textAlign = 'left';
+  bar(W - 164, HUD_Y + 45, 150, 7, enemy.gauge / CONFIG.gaugeMax,
+      eFull ? (Math.floor(Date.now() / 250) % 2 ? '#ffd700' : '#fff3b0') : '#7b5cff', '#555');
 
   // === 음소거 표시 (오른쪽 아래) ===
   ctx.textAlign = 'right';
-  ctx.font = '11px "Courier New", monospace';
+  ctx.font = '10px "Courier New", monospace';
   ctx.fillStyle = muted ? '#6d7a8f' : '#7ec850';
-  ctx.fillText(muted ? '🔇 소리꺼짐 (S)' : '🔊 소리켜짐 (S)', W - 14, HUD_Y + 58);
+  ctx.fillText(muted ? '🔇 소리꺼짐 (X)' : '🔊 소리켜짐 (X)', W - 14, HUD_Y + 68);
   ctx.textAlign = 'left';
 }
 
