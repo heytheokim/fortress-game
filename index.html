@@ -557,6 +557,7 @@ let sparks = [];        // 폭발 파편
 let flashes = [];       // 발사 불꽃
 let damageTexts = [];
 let confetti = [];      // 승리 폭죽
+let shockwaves = [];    // 폭발 충격파 고리 (스톰·오브)
 
 function createExplosion(x, y, who, shotType = 'single') {
   const base = who === 'player' ? player.stats : enemy.stats;
@@ -574,17 +575,39 @@ function createExplosion(x, y, who, shotType = 'single') {
   shake = base.shake * (shotType === 'orb' ? 1.8 : shot.dmgMul);
   if (shotType === 'orb') SFX.orbHit(base); else SFX.explode(base);
 
-  // 파편이 사방으로 튐
-  for (let i = 0; i < 16; i++) {
+  // 파편 — 기종마다 튀는 모양이 다릅니다
+  //   매머드: 적고 무거운 파편이 느리게, 멀리   (묵직한 폭발)
+  //   스톰  : 많고 가벼운 파편이 넓게 흩날림     (광역 폭발)
+  //   레이븐: 그 중간
+  const kind = TANKS.indexOf(base);
+  const burst = shotType === 'orb' ? 34 : kind === 1 ? 13 : kind === 2 ? 26 : 18;
+  for (let i = 0; i < burst; i++) {
     const a = Math.random() * Math.PI * 2;
-    const sp = 1.5 + Math.random() * 3.5;
+    const sp = kind === 1 ? 1.2 + Math.random() * 3.0        // 매머드: 느리고 무겁게
+             : kind === 2 ? 2.2 + Math.random() * 5.0        // 스톰: 빠르고 넓게
+             : 1.5 + Math.random() * 3.5;
     sparks.push({
       x, y,
-      vx: Math.cos(a) * sp,
+      vx: Math.cos(a) * sp * (shotType === 'orb' ? 1.4 : 1),
       vy: Math.sin(a) * sp - 2,
       life: 1,
-      color: Math.random() < 0.5 ? stats.expl[0] : stats.expl[1],
+      // 매머드 파편은 크고 오래 남고, 스톰 파편은 작고 금방 사라집니다
+      size: kind === 1 ? 4 : kind === 2 ? 2 : 3,
+      decay: kind === 1 ? 0.016 : kind === 2 ? 0.03 : 0.022,
+      gravity: kind === 1 ? 0.2 : kind === 2 ? 0.09 : 0.15,
+      color: shotType === 'orb'
+           ? (Math.random() < 0.5 ? '#ffd34e' : '#fff6c9')
+           : (Math.random() < 0.5 ? stats.expl[0] : stats.expl[1]),
     });
+  }
+
+  // 스톰은 폭발 뒤에 먼지 고리가 퍼집니다 (광역형이라는 게 눈에 보이게)
+  if (kind === 2) {
+    shockwaves.push({ x, y, r: stats.radius * 0.4, maxR: stats.radius * 2.2, life: 1,
+                      color: 'rgba(201,166,255,' });
+  } else if (shotType === 'orb') {
+    shockwaves.push({ x, y, r: stats.radius * 0.5, maxR: stats.radius * 2.6, life: 1,
+                      color: 'rgba(255,230,140,' });
   }
 
   if (who === 'player') lastPlayerHit = { x, y };
@@ -930,6 +953,7 @@ function newGame() {
 
   bullets = [];
   explosions = []; sparks = []; flashes = []; damageTexts = []; confetti = [];
+  shockwaves = [];
   charging = false; power = 0;
   lastPlayerHit = null; myLastShot = null;
   shake = 0;
@@ -1110,9 +1134,18 @@ function updateEffects() {
   }
   for (let i = sparks.length - 1; i >= 0; i--) {
     const p = sparks[i];
-    p.x += p.vx; p.y += p.vy; p.vy += 0.15;
-    p.life -= 0.03;
+    // 무게(gravity)와 사라지는 속도(decay)가 기종마다 다릅니다
+    p.x += p.vx; p.y += p.vy; p.vy += (p.gravity ?? 0.15);
+    p.vx *= 0.995;
+    p.life -= (p.decay ?? 0.03);
     if (p.life <= 0) sparks.splice(i, 1);
+  }
+  // 충격파 고리는 빠르게 퍼지며 옅어집니다
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const w = shockwaves[i];
+    w.r += (w.maxR - w.r) * 0.12;
+    w.life -= 0.035;
+    if (w.life <= 0) shockwaves.splice(i, 1);
   }
   for (let i = flashes.length - 1; i >= 0; i--) {
     flashes[i].life--;
@@ -1220,11 +1253,19 @@ function draw() {
     ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius * 0.55, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
   }
-  // 파편
+  // 충격파 고리 (스톰·오브) — 폭발 뒤로 먼지가 퍼져나갑니다
+  for (const w of shockwaves) {
+    ctx.strokeStyle = w.color + (w.life * 0.5).toFixed(2) + ')';
+    ctx.lineWidth = 2 + w.life * 3;
+    ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // 파편 (기종마다 크기가 다릅니다)
   for (const p of sparks) {
-    ctx.globalAlpha = p.life;
+    ctx.globalAlpha = Math.max(0, p.life);
     ctx.fillStyle = p.color;
-    ctx.fillRect(Math.round(p.x) - 1, Math.round(p.y) - 1, 3, 3);
+    const sz = p.size ?? 3;
+    ctx.fillRect(Math.round(p.x) - sz / 2, Math.round(p.y) - sz / 2, sz, sz);
     ctx.globalAlpha = 1;
   }
 
