@@ -395,6 +395,9 @@ let aiTimer = 0;
 
 // 턴 제한 시간. 게임이 초당 120스텝으로 도니까 스텝 수로 세고, 보여줄 때만 초로 바꿉니다.
 let turnTimer = 0;
+// 포탄이 다 사라져도 대포가 아직 떨어지는 중이면 턴을 미룹니다
+// (낙하 데미지가 승패 판정 뒤에 들어가면 안 되므로)
+let waitingTurn = false;
 let lastTickSecond = -1;   // 경고음을 1초에 한 번만 내기 위한 기억용
 
 // 메뉴 선택 상태
@@ -447,6 +450,8 @@ const player = {
   wheelSpin: 0,         // 바퀴 회전량 (이동하면 굴러갑니다)
   bob: 0,               // 이동 중 덜컹거림
   drawAngle: 45,        // 화면에 보이는 포신 각도 (실제 각도를 부드럽게 따라감)
+  fallFrom: null,       // 떨어지기 시작한 높이 (안 떨어지는 중이면 null)
+  fallDealt: 0,         // 이번 턴에 이미 받은 낙하 데미지 (한 턴에 누적되지 않게)
 };
 const enemy = {
   x: 690, y: 0, angle: 135, hp: CONFIG.maxHp,
@@ -455,6 +460,7 @@ const enemy = {
   stats: TANKS[1],
   name: '적',
   tilt: 0, recoil: 0, wheelSpin: 0, bob: 0, drawAngle: 135,
+  fallFrom: null, fallDealt: 0,
   moveTarget: null,     // AI가 이번 턴에 이동할 목적지 (없으면 안 움직임)
   lastPower: null, lastAngle: null,
   shotCount: 0,
@@ -472,8 +478,80 @@ function terrainAngle(x) {
 
 function placeTanks() {
   for (const t of [player, enemy]) {
-    t.y = terrain[Math.round(t.x)];
+    t.y = groundUnder(t.x);
     t.tilt = terrainAngle(t.x);
+    t.fallFrom = null;
+  }
+}
+
+// 폭발로 발밑 땅이 파였을 때, 대포를 바로 순간이동시키지 않고
+// 아래로 "떨어지게" 만듭니다. 떨어진 높이만큼 낙하 데미지를 받습니다.
+// 이게 있어야 "적 발밑을 파서 떨어뜨린다"는 전략이 생깁니다.
+// 대포가 딛고 선 땅의 높이. 한 점이 아니라 차체 폭(±14px)에서 가장 높은 지점을
+// 기준으로 삼습니다 — 그래야 옆을 파도 차체가 걸쳐 있다가, 양옆이 다 파이면 떨어집니다.
+function groundUnder(x) {
+  let best = Infinity;
+  for (let i = -14; i <= 14; i += 2) {
+    const gx = Math.round(x + i);
+    if (gx < 0 || gx >= W) continue;
+    if (terrain[gx] < best) best = terrain[gx];   // y가 작을수록 높은 지대
+  }
+  return best === Infinity ? terrain[Math.round(x)] : best;
+}
+
+function settleTanks() {
+  for (const t of [player, enemy]) {
+    if (t.hp <= 0) { t.y = groundUnder(t.x); continue; }
+    const ground = groundUnder(t.x);
+    if (ground > t.y + 1) {
+      // 땅이 꺼졌습니다 — 떨어지기 시작한 높이를 기억해 둡니다
+      if (t.fallFrom === null || t.fallFrom === undefined) t.fallFrom = t.y;
+    } else if (ground < t.y) {
+      t.y = ground;              // 땅이 솟은 경우는 그냥 맞춥니다
+      t.fallFrom = null;
+    }
+  }
+}
+
+// 매 스텝 조금씩 내려앉히고, 다 떨어지면 낙하 데미지를 줍니다
+function updateFalling() {
+  for (const t of [player, enemy]) {
+    if (t.fallFrom === null || t.fallFrom === undefined) continue;
+    const ground = groundUnder(t.x);
+    if (t.y < ground) {
+      t.y = Math.min(ground, t.y + 2.2);      // 부드럽게 하강
+      t.wheelSpin += 0.06;
+      if (t.y >= ground) {
+        // 착지 — 떨어진 높이에 비례해 데미지
+        const dist = ground - t.fallFrom;
+        t.fallFrom = null;
+        t.tilt = terrainAngle(t.x);
+        if (dist > 12) {
+          // 한 턴 안에 여러 번 떨어져도 총합이 상한을 넘지 않게 합니다
+          const room = Math.max(0, CONFIG.fallDamageMax - t.fallDealt);
+          const dmg = Math.min(room, Math.round(dist * CONFIG.fallDamage));
+          t.fallDealt += dmg;
+          if (dmg > 0) {
+            t.hp = Math.max(0, t.hp - dmg);
+            damageTexts.push({ x: t.x, y: t.y - 30, value: dmg, life: 1, fall: true });
+          }
+          t.bob = 3.5;
+          shake = Math.max(shake, 5);
+          SFX.land();
+          // 착지 먼지
+          for (let i = 0; i < 10; i++) {
+            const a = Math.PI + Math.random() * Math.PI;
+            smoke.push({
+              x: t.x + (Math.random() - 0.5) * 20, y: t.y,
+              vx: Math.cos(a) * (0.6 + Math.random()), vy: -Math.random() * 0.5,
+              r: 3 + Math.random() * 4, life: 1, decay: 0.03, color: '150,140,130',
+            });
+          }
+        }
+      }
+    } else {
+      t.fallFrom = null;
+    }
   }
 }
 
@@ -694,7 +772,7 @@ function createExplosion(x, y, who, shotType = 'single') {
     // 바닥은 암반이라 더 못 팝니다. HUD(500)에 닿지 않게 여유를 둡니다.
     if (newY > terrain[i]) terrain[i] = Math.min(GROUND_H - 14, newY);
   }
-  placeTanks();
+  settleTanks();     // 발밑이 파였으면 대포가 떨어지기 시작합니다
 }
 
 // 게이지를 올리고, 방금 100이 찼으면 알려줍니다
@@ -947,6 +1025,7 @@ function nextTurn() {
     return;
   }
 
+  player.fallDealt = 0; enemy.fallDealt = 0;   // 낙하 데미지 누적치 초기화
   rollWind();   // 턴마다 바람이 새로 붑니다
 
   if (turn === 'player') {
@@ -1019,6 +1098,9 @@ function newGame() {
   bullets = [];
   explosions = []; sparks = []; flashes = []; damageTexts = []; confetti = [];
   shockwaves = []; smoke = []; screenFlash = 0;
+  waitingTurn = false;
+  player.fallFrom = null; enemy.fallFrom = null;
+  player.fallDealt = 0; enemy.fallDealt = 0;
   charging = false; power = 0;
   lastPlayerHit = null; myLastShot = null;
   shake = 0;
@@ -1041,6 +1123,13 @@ function update() {
   if (messageTimer > 0) messageTimer--;
   updateAmbient();
   updateTankMotion();
+  updateFalling();
+
+  // 포탄이 끝났고 대포도 다 내려앉았으면 이제 턴을 넘깁니다
+  if (waitingTurn && player.fallFrom == null && enemy.fallFrom == null) {
+    waitingTurn = false;
+    nextTurn();
+  }
 
   if (phase === 'gameover') { updateEffects(); return; }
 
@@ -1072,7 +1161,7 @@ function update() {
       // 왼쪽 끝 25, 오른쪽은 화면 60%까지 (적 진영까지는 못 감)
       player.x = Math.max(25, Math.min(W * 0.6, nx));
       player.fuel = Math.max(0, player.fuel - CONFIG.moveSpeed);
-      player.y = terrain[Math.round(player.x)];
+      player.y = groundUnder(player.x);
       player.wheelSpin += dir * 0.13;          // 바퀴가 굴러갑니다
       player.bob = Math.sin(player.wheelSpin * 3) * 1.1;   // 울퉁불퉁한 땅에 덜컹
     }
@@ -1089,7 +1178,7 @@ function update() {
       const d = Math.sign(enemy.moveTarget - enemy.x);
       enemy.x += d * 0.9;
       enemy.fuel = Math.max(0, enemy.fuel - 0.9);    // 연료를 씁니다 (플레이어와 동일)
-      enemy.y = terrain[Math.round(enemy.x)];
+      enemy.y = groundUnder(enemy.x);
       enemy.wheelSpin += d * 0.1;
       enemy.bob = Math.sin(enemy.wheelSpin * 3) * 1.1;
     } else {
@@ -1157,7 +1246,7 @@ function update() {
       updateFlySound(bullets[0]);      // 소리는 대표로 첫 번째 포탄을 따라갑니다
     } else {
       stopFlySound();
-      nextTurn();                      // 모든 포탄이 사라져야 턴이 넘어갑니다
+      waitingTurn = true;              // 대포가 다 떨어진 뒤에 턴을 넘깁니다
     }
   }
 
@@ -1444,10 +1533,10 @@ function draw() {
     ctx.fillStyle = `rgba(255, 80, 80, ${dt.life})`;
     ctx.font = 'bold 20px "Courier New", monospace';
     ctx.fillText(`-${dt.value}`, dt.x, dt.y);
-    if (dt.self) {          // 자기 포탄에 자기가 맞았을 때
+    if (dt.self || dt.fall) {   // 자폭 / 추락 표시
       ctx.fillStyle = `rgba(255, 190, 90, ${dt.life})`;
       ctx.font = 'bold 12px "Courier New", monospace';
-      ctx.fillText('자폭!', dt.x, dt.y - 20);
+      ctx.fillText(dt.fall ? '추락!' : '자폭!', dt.x, dt.y - 20);
     }
   }
   ctx.textAlign = 'left';
